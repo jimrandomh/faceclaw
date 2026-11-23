@@ -1,15 +1,10 @@
-import { menuAnimationDurationMs } from "./menu-animation-pref";
+import { menuAnimationDurationMs, nextAnimationToken } from "./menu-animation-pref";
+
+export { nextAnimationToken };
 
 /** At Normal menu animation speed; menuAnimationDurationMs scales it to the setting. */
 export const MENU_HIGHLIGHT_DURATION_MS = 120;
 export type MenuHighlightAnimation = { dx: number; dy: number; startedAt: number; token: number; durationMs: number };
-
-let nextToken = 1;
-
-/** A fresh display-list timeline token, shared by all menu animations. */
-export function nextAnimationToken(): number {
-  return nextToken++;
-}
 
 /** Eligibility is decided by menu navigation, before the display-list bridge. */
 export class MenuHighlightMotion {

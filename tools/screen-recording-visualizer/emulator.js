@@ -15,8 +15,12 @@
   const SCREEN = 65535;
   const CURRENT = 65534;
   const MSG = { UPLOAD: 21, EVICT: 22, DRAW: 26, ROOT: 27, PRESENT: 28, CREATE: 29 };
-  const OP = { BBOX: 1, COPY: 2, STOCK_TEXT: 3, IMAGE: 4, TEXT: 5, LUT: 6, LIST: 7, ROUNDED_RECT: 8, CLEAR: 9 };
-  const FLAG_TARGET = 1, FLAG_DEPTH = 2, FLAG_CLIP = 4;
+  const OP = { BBOX: 1, COPY: 2, STOCK_TEXT: 3, IMAGE: 4, TEXT: 5, LUT: 6, LIST: 7, ROUNDED_RECT: 8, CLEAR: 9, LINE: 10 };
+  const FLAG_TARGET = 1, FLAG_DEPTH = 2, FLAG_CLIP = 4, FLAG_CLIP_ANIMATED = 8;
+  /** A line with an endpoint coordinate further out than this draws nothing. */
+  const LINE_COORDINATE_LIMIT = 4096;
+  /** A shown screen, in the units of the fade an expression reads; a replay is of a shown screen. */
+  const FADE_ONE = 1024;
   const RESOURCE_FONT = 1, RESOURCE_LIST = 2, RESOURCE_LARGE = 4, RESOURCE_RLE = 8;
   const OPT_BRIGHTNESS = 15, OPT_TRANSPARENT = 16, OPT_INVERSE = 32;
   const NO_BORDER = 16, NO_OUTSIDE = 16;
@@ -183,6 +187,10 @@
           const time = Math.min(Math.max(frame.elapsedMs, 0), maximum);
           if (time !== maximum) pending = true;
           push(time);
+        } else if (op === 51) {
+          // The screen fade, 0 (dark) to 1 (shown); the glasses sample it as they draw.
+          pushFloat((frame.fade === undefined ? FADE_ONE : frame.fade) / FADE_ONE);
+          if (frame.fadeMoving) pending = true;
         } else if (op === 64) {
           const t = float();
           const b = float();
@@ -449,7 +457,7 @@
     executeCall(reader, inherited, walk) {
       const opcode = reader.u8();
       const flags = reader.u8();
-      check((flags & ~(FLAG_TARGET | FLAG_DEPTH | FLAG_CLIP)) === 0, 'Reserved call flags');
+      check((flags & ~(FLAG_TARGET | FLAG_DEPTH | FLAG_CLIP | FLAG_CLIP_ANIMATED)) === 0, 'Reserved call flags');
       let target = inherited;
       let resourceTarget = null;
       if (flags & FLAG_TARGET) {
@@ -458,7 +466,19 @@
         target = this.resourceTarget(resourceTarget, walk.apply).shifted(inherited.shiftX);
       }
       if (flags & FLAG_DEPTH) target = target.shifted(depthOffset(reader.s8(), this.host.right));
-      if (flags & FLAG_CLIP) target = target.clipped(reader.s16(), reader.s16(), reader.u16(), reader.u16());
+      if (flags & FLAG_CLIP_ANIMATED) {
+        // The same rect, each field an extended value.
+        check(!(flags & FLAG_CLIP), 'A call has one clip');
+        const x = evaluateValue(reader, walk.frame);
+        const y = evaluateValue(reader, walk.frame);
+        const w = evaluateValue(reader, walk.frame);
+        const h = evaluateValue(reader, walk.frame);
+        // A value outside its fixed field's range (a negative size, say) makes the clip empty.
+        const valid = x >= -32768 && x <= 32767 && y >= -32768 && y <= 32767 && w >= 0 && w <= 65535 && h >= 0 && h <= 65535;
+        target = valid ? target.clipped(x, y, w, h) : target.clipped(0, 0, 0, 0);
+      } else if (flags & FLAG_CLIP) {
+        target = target.clipped(reader.s16(), reader.s16(), reader.u16(), reader.u16());
+      }
       const note = walk.trace
         ? (rect) => walk.trace.push(Object.assign({ op: opcode, target: resourceTarget, shiftX: target.shiftX, depth: walk.ancestors.length }, rect))
         : null;
@@ -471,6 +491,7 @@
         case OP.LUT: return this.remapColors(reader, target, walk, note);
         case OP.ROUNDED_RECT: return this.drawRoundedRect(reader, target, walk, note);
         case OP.CLEAR: return this.clear(reader, target, walk, note);
+        case OP.LINE: return this.drawLine(reader, target, walk, note);
         case OP.LIST: {
           const id = reader.u16();
           reader.done();
@@ -680,6 +701,29 @@
           const entry = tables[((tx + yy) & 1) * 8 + (value >> 1)];
           target.set(tx, yy, value & 1 ? entry & 15 : entry >> 4, KEEP);
         }
+      }
+    }
+
+    /** The stepping is GrayImage.drawLine's, as in the firmware. */
+    drawLine(reader, target, walk, note) {
+      let x = evaluateValue(reader, walk.frame);
+      let y = evaluateValue(reader, walk.frame);
+      const endX = evaluateValue(reader, walk.frame);
+      const endY = evaluateValue(reader, walk.frame);
+      const color = reader.u8();
+      reader.done();
+      check(color <= 15, 'Line color out of range');
+      if (!walk.apply) return;
+      if ([x, y, endX, endY].some((value) => Math.abs(value) > LINE_COORDINATE_LIMIT)) return;
+      if (note) note({ x: Math.min(x, endX), y: Math.min(y, endY), width: Math.abs(endX - x) + 1, height: Math.abs(endY - y) + 1 });
+      const dx = Math.abs(endX - x), stepX = x < endX ? 1 : -1;
+      const dy = -Math.abs(endY - y), stepY = y < endY ? 1 : -1;
+      for (let error = dx + dy; ;) {
+        target.put(x, y, color, ORIGIN.DRAWN);
+        if (x === endX && y === endY) break;
+        const doubled = 2 * error;
+        if (doubled >= dy) { error += dy; x += stepX; }
+        if (doubled <= dx) { error += dx; y += stepY; }
       }
     }
 

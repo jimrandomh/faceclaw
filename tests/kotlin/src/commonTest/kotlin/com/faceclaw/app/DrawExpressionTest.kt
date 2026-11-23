@@ -54,6 +54,16 @@ class DrawExpressionTest {
             assertEquals(0 to false, evaluate(hex("0200000000") + byteArrayOf(op.toByte(), 49)))
             assertEquals(1 to false, evaluate(hex("020000803f") + byteArrayOf(op.toByte(), 49)))
         }
+        // Revision 45: the screen fade, 0..1024 in the frame, reads as 0..1 and keeps the frame
+        // unfinished only while it moves. The phone's own renderings are of a shown screen.
+        val scaled = hex("3302" + "0000c842" + "2231") // fade * 100
+        for ((fade, expected) in listOf(0 to 0, 256 to 25, 512 to 50, 1000 to 97, 1024 to 100)) for (moving in listOf(false, true)) {
+            val frame = DrawEvaluation(250, fade, moving)
+            assertEquals(expected, DrawExpression.evaluate(DrawReader(scaled), frame))
+            assertEquals(moving, frame.animationPending)
+        }
+        assertEquals(100 to false, evaluate(scaled))
+        assertEquals(0 to false, evaluate(hex("33010110"))) // an f32: integer add rejects it
         assertEquals(499 to true, evaluate(hex("0181f432"), 499))
         assertEquals(500 to false, evaluate(hex("0181f432"), 500))
         assertEquals(500 to false, evaluate(hex("0181f432"), 900))

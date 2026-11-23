@@ -420,6 +420,14 @@ class ScreenRecorderTest {
             DrawProtocol.roundedRect(2, 44, 30, 14, 5, 4, 15),
             DrawProtocol.roundedRect(DrawValue.Integer(36), DrawValue.Integer(44), 24, 14, 20, 0, depth = 2, outside = 1),
             DrawProtocol.roundedRect(64, 44, 9, 9, 0, 9),
+            // Revision 45: lines of every slope, clipped and at depth, and a clip given as extended values.
+            DrawProtocol.line(76, 44, 94, 44, 15),
+            DrawProtocol.line(94, 46, 76, 58, 10),
+            DrawProtocol.line(78, 60, 82, 45, 6, depth = -4),
+            DrawProtocol.line(70, 62, 99, 50, 13, clip = DrawClip(74, 52, 16, 8)),
+            DrawProtocol.line(-3, 61, 30, 63, 8),
+            DrawProtocol.clear(12, clip = DrawClip.animated(DrawValue.Integer(86), DrawValue.Integer(54), DrawValue.Integer(7), DrawValue.Integer(-2))),
+            DrawProtocol.clear(12, depth = 3, clip = DrawClip.animated(DrawValue.Integer(86), DrawValue.Integer(54), DrawValue.Integer(7), DrawValue.Integer(3))),
         )))
         // A nested list, and a root that plays it under a dimmed overlay with a moving highlight.
         val inner = DrawProtocol.displayList(listOf(
@@ -431,6 +439,9 @@ class ScreenRecorderTest {
             DrawProtocol.playList(7, depth = 6),
             DrawProtocol.image(6, 60, 50, opaque, depth = 2),
             DrawProtocol.roundedRect(DrawValue.animate(4, 44, 200), DrawValue.Integer(1), 10, 3, 1, 14),
+            // A line whose end sweeps down, and a clear through a clip that opens, on the same clock.
+            DrawProtocol.line(DrawValue.Integer(48), DrawValue.Integer(6), DrawValue.Integer(58), DrawValue.animate(6, 18, 200), 15),
+            DrawProtocol.clear(9, clip = DrawClip.animated(DrawValue.Integer(62), DrawValue.Integer(6), DrawValue.animate(0, 12, 200), DrawValue.Integer(4))),
         ))
         send(byteArrayOf(CFW_MSG_UPLOAD_RESOURCE.toByte(), 2, 0) + upload(7, inner, 0, inner.size) + upload(8, root, 0, root.size))
         send(DrawProtocol.root(8))

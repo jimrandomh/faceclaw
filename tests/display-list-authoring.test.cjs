@@ -151,3 +151,79 @@ test('clipped clears, rects and replayed draws encode, decode and paint', () => 
   assert.equal(draws.source, undefined, 'decoded draws have no software source');
   assert.throws(() => readDisplayList(Buffer.from(REPLAY.replace('01bebafeca', '05bebafeca'), 'hex'), 0, 1100), /draw record/);
 });
+
+// Lines and an animated clip, also consumed by FrameDisplayListTest.kt: a fixed line, one whose
+// far end moves, a clear whose clip widens, and a clipped line at depth 2, 100 of 200 ms into
+// their timeline; then what they paint over a nibble-1 16x8 screen at 0, 100 and 200 ms.
+const ANIMATED = '07af000000020001000c000600000900000064000000000004000a000000000b00040a00000601ff25020000c04002000030410180c8800180c8161101001732800180c81610300180c830234031ff25020000803f020000a0400180c8800180c8161101001732800180c81610300180c8302340310c4900000002ff25020000000002000000410180c8800180c8161101001732800180c81610300180c83023403103078a02000000020004000200010501010f';
+const ANIMATED_PIXELS = [
+  '1111111111111111114444444444441111111111c11111111111f111111111111111f11111111111111111111111111111111111111111111111111111111111',
+  '1111111111111111114444444444441111111111c11111111177f7111c1111111177f71111c11111117777111111111111111111111111111111111111111111',
+  '1111111111111111114444444444441111111111c11111111177f777771111111177f77777cc1111117777777711c1111111111111111c111111111111111111',
+];
+
+function animatedList() {
+  const t = () => E.progress(200);
+  return { x: 2, y: 1, width: 12, height: 6, depth: 0, displayList: { resources: [], timeline: { token: 9, startedAt: 1000 }, calls: [
+    { op: DrawOp.LINE, x0: 0, y0: 0, x1: 11, y1: 0, color: 4 },
+    { op: DrawOp.LINE, x0: 6, y0: 1, x1: t().lerp(E.f32(6), E.f32(11)).toInt(), y1: t().lerp(E.f32(1), E.f32(5)).toInt(), color: 12 },
+    { op: DrawOp.CLEAR, color: 7, clip: { animated: true, x: 0, y: 2, width: t().lerp(E.f32(0), E.f32(8)).toInt(), height: 3 } },
+    { op: DrawOp.LINE, x0: 1, y0: 5, x1: 1, y1: 1, color: 15, clip: { x: 0, y: 2, width: 4, height: 2 }, depth: 2 },
+  ] } };
+}
+
+test('lines and animated clips encode, decode and paint along their timeline', () => {
+  const placed = animatedList();
+  assert.equal(Buffer.from(encodeDisplayList(placed, 1100)).toString('hex'), ANIMATED);
+  const paint = (list, now) => {
+    const output = new Uint8Array(16 * 8).fill(16);
+    paintDisplayList(output, output.slice(), 16, 8, list, false, now);
+    return Array.from(output, (v) => (Math.min(15, (v + 8) >> 4)).toString(16)).join('');
+  };
+  assert.deepEqual([1000, 1100, 1200].map((now) => paint(placed, now)), ANIMATED_PIXELS);
+  // Decoded at 1100, the list knows its timeline is 100 ms in and runs on from there.
+  const decoded = readDisplayList(Buffer.from(ANIMATED, 'hex'), 0, 1100).placed;
+  assert.deepEqual([1100, 1200].map((now) => paint(decoded, now)), ANIMATED_PIXELS.slice(1));
+  const [fixed, moving, clear, clipped] = decoded.displayList.calls;
+  assert.deepEqual([fixed.op, fixed.x0, fixed.y0, fixed.x1, fixed.y1, fixed.color], [DrawOp.LINE, 0, 0, 11, 0, 4]);
+  assert.equal(typeof moving.x1, 'object');
+  assert.equal(clear.clip.animated, true);
+  assert.deepEqual([clear.clip.x, clear.clip.y, clear.clip.height], [0, 2, 3]);
+  assert.deepEqual([clipped.clip, clipped.depth], [{ x: 0, y: 2, width: 4, height: 2 }, 2]);
+  const bytes = Buffer.from(ANIMATED, 'hex');
+  for (let i = 0; i < bytes.length; i++) assert.throws(() => readDisplayList(bytes.slice(0, i), 0));
+  const bad = (call) => ({ ...placed, displayList: { resources: [], calls: [call] } });
+  assert.throws(() => encodeDisplayList(bad({ op: DrawOp.LINE, x0: 0, y0: 0, x1: 1, y1: 1, color: 16 })));
+  // A negative clip size is an empty clip, not an error.
+  const empty = bad({ op: DrawOp.CLEAR, color: 9, clip: { animated: true, x: 0, y: 0, width: -3, height: 4 } });
+  assert.equal(paint(readDisplayList(encodeDisplayList(empty, 0), 0, 0).placed, 0), '1'.repeat(128));
+});
+
+test('a display-list line covers the pixels GrayImage.drawLine paints', () => {
+  let seed = 11;
+  const pick = (low, high) => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return low + (seed >>> 8) % (high - low + 1); };
+  for (let n = 0; n < 2000; n++) {
+    const width = pick(1, 30), height = pick(1, 20);
+    let [x0, y0, x1, y1] = [pick(-8, width + 8), pick(-8, height + 8), pick(-8, width + 8), pick(-8, height + 8)];
+    const kind = pick(0, 5);
+    if (kind === 0) y1 = y0; else if (kind === 1) x1 = x0; else if (kind === 2) { x1 = x0; y1 = y0; }
+    const reference = new GrayImage(width, height, 16);
+    reference.drawLine(x0, y0, x1, y1, 160);
+    const output = new Uint8Array(width * height).fill(16);
+    paintDisplayList(output, output.slice(), width, height, { x: 0, y: 0, width, height, depth: 0,
+      displayList: { resources: [], calls: [{ op: DrawOp.LINE, x0, y0, x1, y1, color: 10 }] } });
+    assert.deepEqual(Array.from(output), Array.from(reference.pixels), `line ${[x0, y0, x1, y1]} on ${width}x${height}`);
+  }
+  // Far-off endpoints draw nothing, like the firmware.
+  const output = new Uint8Array(64).fill(16);
+  paintDisplayList(output, output.slice(), 8, 8, { x: 0, y: 0, width: 8, height: 8, depth: 0,
+    displayList: { resources: [], calls: [{ op: DrawOp.LINE, x0: 0, y0: 0, x1: 5000, y1: 0, color: 10 }] } });
+  assert.ok(output.every((v) => v === 16));
+});
+
+test('the screen fade reads as shown on the phone, and as whatever fade a caller supplies', () => {
+  assert.deepEqual(Array.from(E.fade().code), [ExprOp.FADE]);
+  const scaled = E.fade().ease().lerp(E.f32(100), E.f32(200)).toInt();
+  assert.deepEqual(evaluate(scaled, 0), { value: 200, pending: false });
+  assert.deepEqual([0, 0.5, 1].map((fade) => evaluate(scaled, 0, 0, fade).value), [100, 150, 200]);
+});

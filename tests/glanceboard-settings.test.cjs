@@ -48,9 +48,12 @@ function harness() {
     constructor(width, height) { this.width = width; this.height = height; }
     drawLine() {}
     composeInto() {}
+    drawDisplayList() {}
   }
   const { GlanceBoard } = load('app/apps/glanceboard/board.ts', {
-    '../../graphics/image': { GrayImage }, '../../ui/dashboard-settings': config,
+    '../../graphics/image': { GrayImage, grayToNibble: require('../.test-build/app/graphics/image.js').grayToNibble },
+    '../../ui/dashboard-settings': config,
+    './divider-list': require('../.test-build/app/apps/glanceboard/divider-list.js'),
     './glanceboard-settings': settings, './layout': layout, './widgets': widgets,
   });
   return { settings, GlanceBoard, values, listeners, live, glasses, notify: () => [...listeners].forEach((listener) => listener()) };

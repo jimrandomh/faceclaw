@@ -66,5 +66,48 @@ internal fun brightnessPayload(target: Int, visible: Boolean, durationMs: Int): 
     byteArrayOf(CFW_MSG_BRIGHTNESS.toByte(), 1, target.toByte(), (if (visible) 1 else 0).toByte(),
         durationMs.toByte(), (durationMs shr 8).toByte())
 
+/**
+ * The glasses act on a brightness command at their next brightness tick, so a fade starts up to
+ * this long after its command arrives. Keep in sync with BRIGHTNESS_TICK_MS in g2flash
+ * patches/brightness.h.
+ */
+internal const val BRIGHTNESS_TICK_MS = 40
+
+/**
+ * How long the blank frame of a screen-off still has to wait, 0 when nothing is held.
+ *
+ * Faceclaw/45 keeps replaying the frame on screen while it fades out, so whatever that frame
+ * animates, and whatever it draws from the fade itself, keeps moving until the screen is dark.
+ * Staging the blank frame's draws would stop that at once. So for those glasses a screen-off
+ * starts the fade here, ahead of its frame, and the frame waits the fade out: the fade's own
+ * length, whatever the Screen fade speed makes it, and the tick it can take to start. A wake
+ * that comes first never sends the frame at all.
+ */
+internal fun GlassesSessionCore.blankFrameHoldMsLocked(now: Long): Long {
+    val desired = desiredFingerprintSnapshot()
+    if (!isBlankedFingerprint(desired)) {
+        if (blankFrameHeldUntilMs != 0L) {
+            // Told to fade out, the glasses now need a PRESENT to fade back in on, even though
+            // the frame they hold may be the very one wanted.
+            blankFrameHeldUntilMs = 0L
+            lastEnqueuedFingerprint = ""
+            logLine("screen back on before its blank frame was sent")
+        }
+        return 0L
+    }
+    if (blankFrameHeldUntilMs == 0L) {
+        if (!isG2 || faceclawFirmwareRevision < DrawProtocol.ANIMATION_FIRMWARE_REVISION
+                || brightnessSentVisible != true || brightnessPolicy.fadeMs <= 0
+                || desired == lastEnqueuedFingerprint) return 0L
+        enqueueBrightnessLocked(false)
+        // Not queued (the display path is not ready): the frame goes out as usual.
+        if (brightnessSentVisible != false) return 0L
+        val holdMs = brightnessPolicy.fadeMs + BRIGHTNESS_TICK_MS
+        blankFrameHeldUntilMs = now + holdMs
+        logLine("holding the blank frame " + holdMs + "ms for the fade-out")
+    }
+    return maxOf(0L, blankFrameHeldUntilMs - now)
+}
+
 /** SurfaceCompositor's fingerprint for a frame with the display blanked, which the brightness follows. */
 internal fun isBlankedFingerprint(fingerprint: String): Boolean = fingerprint.startsWith("blanked:")

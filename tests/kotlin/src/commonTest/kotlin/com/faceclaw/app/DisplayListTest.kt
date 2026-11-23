@@ -475,6 +475,101 @@ class DisplayListTest {
         assertContentEquals(hex("000402ffffffff"), resources.getValue(6))
         expect(draw("0804" + "0400040000000000" + "0000" + "1000" + "0800" + "0000" + "0f10"), 15) { _, _ -> false }
         // Unknown flag bits, a truncated clip header, and the old s16 image layout all reject.
-        for (bad in listOf("090800", "0904000000000100", "04000100020001000f")) assertFails(bad) { draw(bad) }
+        for (bad in listOf("091000", "0904000000000100", "04000100020001000f")) assertFails(bad) { draw(bad) }
+    }
+
+    /**
+     * Revision 45: draw op 10 and the animated clip flag. The same calls and pixels as LineTest's
+     * shared golden in g2flash/tests/test_display_list.py (tests/line-vector.json there).
+     */
+    @Test fun linesAndAnimatedClipsMatchFirmwareOnBothLenses() {
+        val sequence = hex("100007000a0001010e010f07000a000e0301030907000a000202020a0707000a00000b0f040c07000a000500080b0307000a000c0b09050e07000a007b0614060507000a000a7d0a140607000a007c7c140f0808000a020503080908020f000a04040004000600040000050f070a0b000a080600040c00090f090b0c000a0afd0b0205030d000d0b0d07000a00070707070408000a0093880000000f08000a00000000ac780f")
+        val expected = mapOf(
+            false to "18111311116111111f8ff3ffff6ffff111788131116d111119799839996d999111711181116d11cc117111381e61cc115555aaaaaa65555511711114cc81111111711222222211111171ccbbbb6e881111cc1111316e1181cc1111113161e118",
+            true to "18111311116111111f8ff3ffff6ffff111788131116111d119799839996999d111711181116111dc117111381e61cc115555aaaaaa65555511711114cc81111122222223116811111171ccbbbb6e881111cc1111316e1181cc1111113161e118",
+        )
+        for ((right, pixels) in expected) {
+            val bytes = ByteArray(96) { 0x11 }
+            DisplayListRenderer(emptyMap(), rightLens = right).execute(sequence, DisplayListRenderer.Target(bytes, 16, 12))
+            assertContentEquals(hex(pixels), bytes, "right=$right")
+        }
+    }
+
+    @Test fun linesStepLikeAPerPixelReferenceUnderShiftsAndClips() {
+        val random = Random(45)
+        repeat(6000) { case ->
+            val width = random.nextInt(1, 30); val height = random.nextInt(1, 20)
+            val shift = random.nextInt(-5, 6)
+            val clip = if (random.nextBoolean()) null else {
+                val left = random.nextInt(-3, width + 1); val top = random.nextInt(-3, height + 1)
+                intArrayOf(left, top, left + random.nextInt(0, width + 4), top + random.nextInt(0, height + 4))
+            }
+            val far = random.nextInt(40) == 0
+            fun coordinate(size: Int) = if (far) random.nextInt(-5000, 5000) else random.nextInt(-12, size + 12)
+            val x0 = coordinate(width); val y0 = coordinate(height); var x1 = coordinate(width); var y1 = coordinate(height)
+            when (random.nextInt(6)) { 0 -> y1 = y0; 1 -> x1 = x0; 2 -> { x1 = x0; y1 = y0 } }
+            val color = random.nextInt(16)
+            val bytes = random.nextBytes((width + 1) / 2 * height)
+            val expected = bytes.copyOf()
+            val reference = DisplayListRenderer.Target(expected, width, height, 0, shift, clip)
+            if (listOf(x0, y0, x1, y1).all { it in -DRAW_LINE_COORDINATE_LIMIT..DRAW_LINE_COORDINATE_LIMIT }) {
+                // GrayImage.drawLine's stepping (app/graphics/image.ts), one pixel at a time.
+                var x = x0; var y = y0
+                val dx = kotlin.math.abs(x1 - x0); val sx = if (x0 < x1) 1 else -1
+                val dy = -kotlin.math.abs(y1 - y0); val sy = if (y0 < y1) 1 else -1
+                var error = dx + dy
+                while (true) {
+                    reference.put(x, y, color)
+                    if (x == x1 && y == y1) break
+                    val doubled = 2 * error
+                    if (doubled >= dy) { error += dy; x += sx }
+                    if (doubled <= dx) { error += dx; y += sy }
+                }
+            }
+            DisplayListRenderer(emptyMap()).execute(DrawProtocol.sequence(listOf(DrawProtocol.line(x0, y0, x1, y1, color))),
+                DisplayListRenderer.Target(bytes, width, height, 0, shift, clip))
+            assertContentEquals(expected, bytes, "case $case")
+        }
+        val target = DisplayListRenderer.Target(ByteArray(8), 4, 4)
+        fun run(call: String) = DisplayListRenderer(emptyMap()).execute(DrawProtocol.sequence(listOf(hex(call))), target)
+        run("0a00" + "00000303" + "0f")
+        // A color past 15, trailing or missing bytes, and both clip flags reject.
+        for (bad in listOf("0a00" + "00000303" + "10", "0a00" + "00000303" + "0f00", "0a00" + "000003",
+            "0a0c" + "0000000004000400" + "00000404" + "00000303" + "0f")) {
+            assertFails(bad) { run(bad) }
+        }
+    }
+
+    @Test fun animatedClipsAndLineEndsFollowTimeAndSaturate() {
+        val width = DrawValue.Expression(hex("010832")) // min(elapsed, 8)
+        val end = DrawValue.Expression(hex("010c32")) // min(elapsed, 12)
+        val zero = DrawValue.Integer(0)
+        val sequence = DrawProtocol.sequence(listOf(
+            DrawProtocol.clear(15, clip = DrawClip.animated(zero, DrawValue.Integer(1), width, DrawValue.Integer(2))),
+            DrawProtocol.line(DrawValue.Integer(2), zero, end, zero, 9),
+        ))
+        for (elapsed in 0L..20L) {
+            val target = DisplayListRenderer.Target(ByteArray(32) { 0x33 }, 16, 4)
+            val renderer = DisplayListRenderer(emptyMap())
+            renderer.execute(sequence, target, elapsedMs = elapsed)
+            assertEquals(elapsed < 12, renderer.animationPending)
+            val w = minOf(elapsed.toInt(), 8); val last = minOf(elapsed.toInt(), 12)
+            for (y in 0 until 4) for (x in 0 until 16) {
+                val expected = if (y == 0 && x in minOf(2, last)..maxOf(2, last)) 9 else if (y in 1..2 && x < w) 15 else 3
+                assertEquals(expected, target.get(x, y), "elapsed $elapsed ($x, $y)")
+            }
+        }
+        // The same cases as the firmware's: a value outside its fixed field's range empties the clip.
+        val cases = listOf(listOf(0, 0, -5, 4) to 0, listOf(0, 0, 4, -1) to 0, listOf(0, 0, 1000000, 1000000) to 0,
+            listOf(-2000000000, 0, 2000000000, 4) to 0, listOf(2000000000, 0, 2000000000, 4) to 0,
+            listOf(-1000, -1000, 1008, 1002) to 16, listOf(15, 3, 2000000000, 2000000000) to 0,
+            listOf(-32768, -32768, 65535, 65535) to 64, listOf(-32769, 0, 65535, 4) to 0, listOf(0, 0, 65536, 4) to 0,
+            listOf(15, 3, 65535, 65535) to 1)
+        for ((fields, filled) in cases) {
+            val target = DisplayListRenderer.Target(ByteArray(32), 16, 4)
+            val (x, y, w, h) = fields.map { DrawValue.Integer(it) }
+            DisplayListRenderer(emptyMap()).execute(DrawProtocol.sequence(listOf(DrawProtocol.clear(15, clip = DrawClip.animated(x, y, w, h)))), target)
+            assertEquals(filled, (0 until 64).count { target.get(it % 16, it / 16) == 15 }, fields.toString())
+        }
     }
 }

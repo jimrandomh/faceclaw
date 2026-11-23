@@ -41,6 +41,11 @@ Supported calls:
 - `CLEAR` (revision 35 with a clip): fill with a 4-bit `color`. Under a clip it
   fills just the clip rect, which is how to blank a region; without one it
   fills the whole screen.
+- `LINE` (revision 45): a one-pixel line in a 4-bit `color` from `x0`/`y0` to
+  `x1`/`y1`, both included, each a literal or an expression. It steps exactly
+  as `GrayImage.drawLine` does, so it can redraw a line that is also in the
+  frame's pixels. Equal endpoints draw one pixel; an endpoint beyond ±4096
+  draws nothing.
 - `DRAWS` (bridge-only): replay glyph and icon draws offset by `x`/`y`, which
   may be expressions. `records`/`count` come from glyph-wire's
   `encodeReplayDraws(image.draws)`, which registers the rasters and returns null
@@ -53,6 +58,10 @@ Supported calls:
 
 Any call may carry a `clip` (revision 35): a rect in list coordinates outside
 which it draws nothing. It moves with the call's depth, like the call itself.
+An `AnimatedListClip` (`{ animated: true, x, y, width, height }`, revision 45)
+has expressions for fields, so the clip can open, close or move; a field that
+evaluates outside the fixed clip's ranges (a negative size, say) makes it
+empty.
 The firmware flag also nests (a clipped play-list call clips everything inside
 it, intersected with the calls' own clips), but TS lists are inlined into the
 root, so each call carries its own.
@@ -71,6 +80,18 @@ operations round to f32. The firmware's existing stack/error semantics apply.
 Rounded-rectangle x/y and rect-copy source/destination coordinates accept
 expressions. `E.progress(duration, delay)` stays 0 for the first `delay` ms of
 the timeline, so one list can run motions that started at different times.
+
+`E.fade()` (revision 45) is the screen fade as an f32: 0 while the screen is
+dark, 1 once shown, moving linearly through a wake's fade-in and a sleep's
+fade-out. The glasses redraw for as long as it moves, so a list built on it
+needs no timeline and nothing sent during the fade. The phone's own renderings
+are of a shown screen: `evaluate` takes the fade as an argument, 1 by default.
+
+Lists that use `LINE`, an animated clip or `E.fade()` need firmware revision
+45. For older glasses Kotlin leaves the whole list out of the root, so its
+content must already be in the frame's pixels underneath, with the list only
+adding motion; `app/apps/glanceboard/divider-list.ts`, `toggle-switch-list.ts`
+and `app/apps/launcher/folder-transition.ts` are built that way.
 
 `maximum.time()` returns `min(milliseconds since PRESENT, maximum)`. The existing
 45 ms repaint timer remains active while this is below maximum. `E.elapsed()` is
@@ -100,10 +121,12 @@ TypeScript. There is no animated-menu tag or menu animation policy in Kotlin.
 Tag 7 is followed by a little-endian u32 byte length and a bounded body:
 placement (i16 x/y, u16 width/height, i8 depth), timeline (u32 token/elapsed),
 u16 resource count, gray8 images (u16 width/height followed by pixels), u16 call
-count, then calls. Calls start with the opcode (bit 7 set when a clip follows)
-and an i16 relative depth, then the clip if any (i16 x/y, u16 width/height);
+count, then calls. Calls start with the opcode (bit 7 set when a clip follows,
+bit 6 when an animated clip does) and an i16 relative depth, then the clip if
+any (i16 x/y, u16 width/height; an animated one is four extended varints);
 operands otherwise use their fixed-width fields, except rounded x/y, rect-copy
-x/y/dx/dy and DRAWS x/y which use extended varints. CLEAR is a u8 color. DRAWS
+x/y/dx/dy, DRAWS x/y and LINE's four coordinates, which use extended varints.
+CLEAR is a u8 color, and LINE ends with one. DRAWS
 (opcode 32) is followed by a u16 record count and the records, in the frame
 draw-buffer formats: glyph `[0][fontId u16][encoding u32][penX s16][lineY s16][value u8]`
 and image `[1][imageId u32][x s16][y s16]`. Expressions use the firmware bytecode plus bridge-only

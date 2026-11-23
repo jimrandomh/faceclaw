@@ -33,6 +33,7 @@
   };
   const OP_NAMES = {
     1: 'pixels', 2: 'copy', 3: 'stock text', 4: 'image', 5: 'text', 6: 'color remap', 7: 'play list', 8: 'rounded rect', 9: 'clear',
+    10: 'line',
   };
   const RESOURCE_TYPES = ['image', 'font', 'display list', 'reserved'];
 
@@ -132,6 +133,12 @@
       const target = flags & 1 ? call.u16() : null;
       const depth = flags & 2 ? call.s8() : null;
       if (flags & 4) call.take(8);
+      // An animated clip: four extended values, each a literal or 0xff and a framed expression.
+      if (flags & 8) for (let field = 0; field < 4; field++) {
+        const first = call.u8();
+        if (first === 0xff) call.take(Emulator.readVarint(call, false) >>> 0);
+        else Emulator.readVarint(call, true, first);
+      }
       let text = OP_NAMES[opcode] || 'opcode ' + opcode;
       let category = CATEGORY.DRAWS;
       try {

@@ -1,9 +1,12 @@
-/** Revision 27 expression bytecode. ELAPSED is a bridge binding, never sent to firmware. */
+/**
+ * Revision 27 expression bytecode (FADE: revision 45). ELAPSED is a bridge
+ * binding, never sent to firmware.
+ */
 export const ExprOp = {
   I32: 1, F32: 2, DUP: 3, DROP: 4, SWAP: 5,
   IADD: 16, ISUB: 17, IMUL: 18, IDIV: 19, IMOD: 20, INEG: 21, IMIN: 22, IMAX: 23,
   FADD: 32, FSUB: 33, FMUL: 34, FDIV: 35, FNEG: 36, FMIN: 37, FMAX: 38,
-  I2F: 48, F2I: 49, TIME: 50, LERP: 64, SMOOTHSTEP: 65,
+  I2F: 48, F2I: 49, TIME: 50, FADE: 51, LERP: 64, SMOOTHSTEP: 65,
   EASE_IN_QUAD: 66, EASE_OUT_QUAD: 67, EASE_IN_OUT_QUAD: 68,
   EASE_IN_CUBIC: 69, EASE_OUT_CUBIC: 70, EASE_IN_OUT_CUBIC: 71,
   ELAPSED: 128,
@@ -74,6 +77,14 @@ export class DrawExpression<T extends 'i32' | 'f32'> {
     if (delayMs) total = total.sub(DrawExpression.i32(delayMs)).max(DrawExpression.i32(0));
     return total.toFloat().div(duration.toFloat());
   }
+  /**
+   * How far the screen is into being visible: 0 while it is dark and 1 once
+   * shown, moving linearly between them through a wake's fade-in or a sleep's
+   * fade-out (revision 45). The glasses redraw for as long as the fade runs,
+   * so a drawing built on this follows it both ways with nothing sent in
+   * between. The phone's own renderings are of a shown screen: always 1.
+   */
+  static fade(): DrawExpression<'f32'> { return new DrawExpression('f32', [ExprOp.FADE]); }
   static decode(code: Uint8Array): DrawExpression<'i32'> { return new DrawExpression('i32', Array.from(code)); }
   private binary(other: DrawExpression<T>, i: number, f: number): DrawExpression<T> {
     if (other.type !== this.type) throw new Error('Draw expression type mismatch');
@@ -107,8 +118,11 @@ export function readValue(reader: DrawBytes): DrawValue {
   reader.u8(); return DrawExpression.decode(reader.take(reader.variable(false)));
 }
 
-/** Software preview of the same VM; invalid programs return zero and discard pending animation. */
-export function evaluate(value: DrawValue, elapsed: number, presentTime = 0): { value: number; pending: boolean } {
+/**
+ * Software preview of the same VM; invalid programs return zero and discard pending animation.
+ * `fade` is the screen fade a program reads (see DrawExpression.fade): the phone's is a shown screen.
+ */
+export function evaluate(value: DrawValue, elapsed: number, presentTime = 0, fade = 1): { value: number; pending: boolean } {
   if (typeof value === 'number') return { value, pending: false };
   const reader = new DrawBytes(Uint8Array.from(value.code)), stack: { value: number; float: boolean }[] = [];
   let pending = false;
@@ -125,6 +139,7 @@ export function evaluate(value: DrawValue, elapsed: number, presentTime = 0): { 
       if (op === ExprOp.I32) push(reader.variable());
       else if (op === ExprOp.F32) { const b = reader.take(4); push(new DataView(b.buffer).getFloat32(0, true), true); }
       else if (op === ExprOp.ELAPSED) push(Math.min(2147483647, Math.max(0, elapsed)));
+      else if (op === ExprOp.FADE) push(fade, true);
       else if (op === ExprOp.I2F) push(pop(false), true);
       else if (op === ExprOp.F2I) push(toInt(pop(true)));
       else if (op === ExprOp.TIME) { const max = pop(false); if (max < 0) throw new Error('Invalid time'); const t = Math.min(Math.max(0, presentTime), max); pending ||= t !== max; push(t); }

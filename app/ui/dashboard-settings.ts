@@ -1843,7 +1843,7 @@ export function toggleSettingMenuItem<TId extends string = string>(
       opts?.onChange?.(ctx, setting.get(), !setting.get());
     },
     render: ({ image, x, y, width, selected }) => {
-      drawToggleMenuItem(image, getDefaultSmallFont(), x, y, width, label, setting.get(), selected);
+      drawToggleMenuItem(image, getDefaultSmallFont(), x, y, width, label, setting.get(), selected, `setting:${setting.id}`);
     },
   };
 }

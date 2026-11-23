@@ -1,4 +1,4 @@
-import { GrayImage, imageFromAsciiArt, type UiFont } from "../graphics/image";
+import { GrayImage, imageFromAsciiArt, TOGGLE_SWITCH_HEIGHT, TOGGLE_SWITCH_WIDTH, type ToggleSwitchAnimation, type UiFont } from "../graphics/image";
 import { screenHeight } from "../graphics/screen-size";
 import { wrapText } from "../graphics/textwrap";
 import { getDefaultSmallFont } from "../graphics/ui-fonts";
@@ -6,7 +6,7 @@ import { getStringSetting } from "../native/settings-store";
 import { clamp } from "../util/numeric-util";
 import { normalizeAnimationSpeed } from "./animation-speed";
 import { Layer, LayerContext, PaintBelow } from "./layers";
-import { MENU_ANIMATION_KEY, setMenuAnimationReader } from "./menu-animation-pref";
+import { MENU_ANIMATION_KEY, menuAnimationDurationMs, nextAnimationToken, setMenuAnimationReader } from "./menu-animation-pref";
 import { Menu, MENU_HIGHLIGHT_FILL, MENU_HIGHLIGHT_STROKE } from "./menu-core";
 
 import { GESTURE_DOUBLE_CLICK, InputEvent } from "./gestures";
@@ -297,6 +297,39 @@ export function menuHeadingItem(label: string): MenuItem {
   };
 }
 
+/** A switch's flip, at Normal menu animation speed. */
+const TOGGLE_ANIMATION_MS = 140;
+/** How many toggles' states are remembered for animating; the oldest are forgotten first. */
+const MAX_TOGGLE_STATES = 128;
+
+/** What each keyed toggle last showed, and its flip while one is under way. */
+const toggleStates = new Map<string, { on: boolean; animation?: ToggleSwitchAnimation }>();
+
+/**
+ * The flip to play for the toggle `key` painted as `on` now: one starts when a
+ * paint finds the toggle changed since its last paint, and later paints carry
+ * it until it is done. A toggle's first paint just shows its state.
+ */
+function toggleAnimation(key: string, on: boolean): ToggleSwitchAnimation | undefined {
+  const now = Date.now();
+  let state = toggleStates.get(key);
+  if (!state) {
+    if (toggleStates.size >= MAX_TOGGLE_STATES) toggleStates.delete(toggleStates.keys().next().value!);
+    toggleStates.set(key, state = { on });
+  } else if (state.on !== on) {
+    const durationMs = menuAnimationDurationMs(TOGGLE_ANIMATION_MS);
+    state.on = on;
+    state.animation = durationMs > 0 ? { startedAt: now, token: nextAnimationToken(), durationMs } : undefined;
+  }
+  const animation = state.animation;
+  return animation && now - animation.startedAt < animation.durationMs ? animation : undefined;
+}
+
+/**
+ * A row with a label and a switch at its right edge. `motionKey` names the
+ * toggle across paints (a setting's storage key, say), which lets the switch
+ * animate when it flips; without one it just shows its state.
+ */
 export function drawToggleMenuItem(
   image: GrayImage,
   font: UiFont,
@@ -306,19 +339,14 @@ export function drawToggleMenuItem(
   label: string,
   enabled: boolean,
   selected: boolean,
+  motionKey?: string,
 ): void {
-  const switchWidth = 34;
-  const switchHeight = 16;
-  const switchX = x + width - switchWidth - 2;
+  const switchX = x + width - TOGGLE_SWITCH_WIDTH - 2;
   // Center the switch on the row's line box (legacy y+1 at the 12px default).
-  const switchY = y + Math.max(1, Math.round((listRowHeight(font) - 2 - switchHeight) / 2));
+  const switchY = y + Math.max(1, Math.round((listRowHeight(font) - 2 - TOGGLE_SWITCH_HEIGHT) / 2));
   image.drawText(font, x, y + LIST_ROW_TEXT_INSET, label, 200);
-  const offFill = selected ? 1 : 18;
-  image.fillRoundedRect(switchX, switchY, switchWidth, switchHeight, enabled ? 70 : offFill, 8);
-  image.drawRoundedRect(switchX, switchY, switchWidth, switchHeight, enabled ? 130 : 55, 8);
-  const knobSize = 12;
-  const knobX = enabled ? switchX + switchWidth - knobSize - 2 : switchX + 2;
-  image.fillRoundedRect(knobX, switchY + 2, knobSize, knobSize, enabled ? 230 : selected ? 170 : 90, 6);
+  image.drawToggleSwitch(switchX, switchY, enabled, selected,
+    motionKey === undefined ? undefined : toggleAnimation(motionKey, enabled));
 }
 
 export function drawRightValueMenuItem(

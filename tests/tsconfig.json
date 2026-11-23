@@ -56,6 +56,8 @@
     "../app/ui/shell/notification-popup-delay.ts",
     "../app/ui/shell/notification-popup-timeout.ts",
     "../app/apps/glanceboard/layout.ts",
+    "../app/apps/glanceboard/divider-list.ts",
+    "../app/apps/launcher/folder-transition.ts",
     "../app/apps/files/video-layout.ts",
     "../app/g2/pairing-candidates.ts",
     "../app/g1/pako.d.ts",

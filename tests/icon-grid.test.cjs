@@ -354,3 +354,57 @@ test('hitTest opens the cell under the touch, including the peeking row', async 
   assert.equal(await grid.hitTest(250, 5, null), false, 'above the box');
   assert.equal(await grid.hitTest(250, 10 + 2 * ROW_H + 5, null), false, 'past the last cell of a short row');
 });
+
+test('replayCalls redraws the grid as painted, anywhere a host puts it, and iconCenter finds a cell', async () => {
+  const { paintDisplayList } = build('graphics/display-list');
+  const { grid, state } = makeGrid({ items: Array.from({ length: 15 }, (_, i) => `item${i}`) });
+  assert.equal(grid.replayCalls({ x: 0, y: 0 }, { x: 0, y: 0, width: 10, height: 10 }, true), null, 'nothing before a paint');
+  assert.equal(grid.iconCenter(0), null);
+  await grid.handleInput(ring('scroll-down'), null);
+  await grid.handleInput(ring('click'), null);
+  const painted = paint(grid, 5000);
+  const settled = shown(painted, 9000);
+  // Over a blank copy of the image, with the box's corner where the box is, the calls
+  // repaint the grid's part of it exactly: highlight, rows, and the clipped row at the bottom.
+  const replay = (focused, clip) => {
+    const calls = grid.replayCalls({ x: BOX.x, y: BOX.y }, clip, focused);
+    const output = new Uint8Array(500 * 200);
+    paintDisplayList(output, output.slice(), 500, 200, { displayList: { resources: [], calls }, x: 0, y: 0, width: 500, height: 200, depth: 0 });
+    return { calls, pixels: Array.from(output, (v) => Math.min(15, (v + 8) >> 4)) };
+  };
+  const whole = { x: BOX.x, y: BOX.y, width: BOX.width, height: BOX.height };
+  const full = replay(true, whole);
+  assert.deepEqual(Array.from(full.calls, (call) => call.op), [DrawOp.ROUNDED_RECT, DrawOp.DRAWS]);
+  assert.deepEqual(full.pixels, settled);
+  // A narrower clip shows just that part of it; an unfocused grid loses the highlight's fill.
+  const part = replay(true, { x: 100, y: 40, width: 200, height: 90 });
+  part.pixels.forEach((value, i) => {
+    const x = i % 500, y = (i / 500) | 0;
+    assert.equal(value, x >= 100 && x < 300 && y >= 40 && y < 130 ? settled[i] : 0);
+  });
+  const unfocused = withClock(9000, () => {
+    const image = new GrayImage(500, 200);
+    grid.paint(image, BOX, false);
+    return shown(image, 9000);
+  });
+  assert.deepEqual(replay(false, whole).pixels, unfocused);
+  // The second row's middle cell, where the selection is: its icon's centre.
+  const center = grid.iconCenter(7);
+  assert.deepEqual([center.x, center.y], [250, 10 + ROW_H + (ROW_H - 44 - LINE_HEIGHT - 2) / 2 + 22]);
+  assert.equal(grid.iconCenter(99), null);
+  state.replayable = false;
+  assert.equal(grid.replayCalls({ x: 0, y: 0 }, whole, true), null, 'rows that cannot be replayed');
+});
+
+test('a grid painted at rest shows no motion and forgets the one it had', async () => {
+  const { grid } = makeGrid({ items: Array.from({ length: 15 }, (_, i) => `item${i}`) });
+  paint(grid, 1000);
+  await grid.handleInput(ring('scroll-down'), null);
+  const resting = withClock(2000, () => {
+    const image = new GrayImage(500, 200);
+    grid.paint(image, BOX, false, { animate: false });
+    return image;
+  });
+  assert.equal(animation(resting), undefined);
+  assert.equal(animation(paint(grid, 2010)), undefined, 'the slide does not resume afterwards');
+});

@@ -10,3 +10,5 @@ const val DRAW_OP_REMAP_COLORS = 6
 const val DRAW_OP_DISPLAY_LIST = 7
 const val DRAW_OP_ROUNDED_RECT = 8
 const val DRAW_OP_CLEAR = 9
+/** Revision 45. */
+const val DRAW_OP_LINE = 10

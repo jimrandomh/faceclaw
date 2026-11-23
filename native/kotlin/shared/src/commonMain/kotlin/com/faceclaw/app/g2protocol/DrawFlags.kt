@@ -9,7 +9,12 @@ const val DRAW_FLAG_RESOURCE_TARGET = 1
 const val DRAW_FLAG_DEPTH = 2
 /** Revision 35: an x/y s16, w/h u16 clip rect follows the depth byte. */
 const val DRAW_FLAG_CLIP = 4
-const val DRAW_FLAGS_MASK = DRAW_FLAG_RESOURCE_TARGET or DRAW_FLAG_DEPTH or DRAW_FLAG_CLIP
+/** Revision 45: the clip's x, y, width and height follow as extended values instead, so it can move. */
+const val DRAW_FLAG_CLIP_ANIMATED = 8
+const val DRAW_FLAGS_MASK = DRAW_FLAG_RESOURCE_TARGET or DRAW_FLAG_DEPTH or DRAW_FLAG_CLIP or DRAW_FLAG_CLIP_ANIMATED
+
+/** A line with an endpoint coordinate further out than this draws nothing. */
+const val DRAW_LINE_COORDINATE_LIMIT = 4096
 
 /** Bounding-box payload flag: u16 coordinates/sizes instead of aligned compact units. */
 const val DRAW_BBOX_FLAG_U16 = 1

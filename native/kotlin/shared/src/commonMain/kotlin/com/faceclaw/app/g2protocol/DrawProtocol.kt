@@ -4,16 +4,33 @@ package com.faceclaw.app
  * A draw call's clip rect (revision 35, DRAW_FLAG_CLIP), in the call's own
  * coordinates: it moves with the call's depth, narrows any clip inherited
  * from an enclosing play-list call, and is dropped by a target override.
+ *
+ * An [animated] clip (revision 45, DRAW_FLAG_CLIP_ANIMATED) has extended values
+ * for fields, so each may be an expression. One that evaluates outside its
+ * fixed field's range (a negative size, say) makes the clip empty.
  */
-class DrawClip(val x: Int, val y: Int, val width: Int, val height: Int) {
-    init {
+class DrawClip private constructor(
+    internal val x: DrawValue, internal val y: DrawValue, internal val width: DrawValue, internal val height: DrawValue,
+    val animated: Boolean,
+) {
+    constructor(x: Int, y: Int, width: Int, height: Int) :
+        this(DrawValue.Integer(x), DrawValue.Integer(y), DrawValue.Integer(width), DrawValue.Integer(height), false) {
         require(x in -32768..32767 && y in -32768..32767 && width in 0..65535 && height in 0..65535)
     }
 
-    fun translated(dx: Int, dy: Int) = DrawClip(x + dx, y + dy, width, height)
+    /** A fixed clip moved by (dx, dy). An animated one is moved where its expressions are bound. */
+    fun translated(dx: Int, dy: Int): DrawClip {
+        require(!animated)
+        return DrawClip((x as DrawValue.Integer).value + dx, (y as DrawValue.Integer).value + dy,
+            (width as DrawValue.Integer).value, (height as DrawValue.Integer).value)
+    }
+
+    companion object {
+        fun animated(x: DrawValue, y: DrawValue, width: DrawValue, height: DrawValue) = DrawClip(x, y, width, height, true)
+    }
 }
 
-/** Revision 36 wire grammar, shared by scene planning and the local renderer. */
+/** Revision 45 wire grammar, shared by scene planning and the local renderer. */
 object DrawProtocol {
     /** Mirrors g2flash/patches/zlib_glue.c. */
     const val DRAW = CFW_MSG_DRAW_CALLS
@@ -32,6 +49,15 @@ object DrawProtocol {
     const val SCREEN = 65535
     const val CURRENT = 65534
 
+    /**
+     * The first Faceclaw firmware revision with the line call, animated clips, the screen-fade
+     * expression input, and replays of the frame on screen while it fades out. Older glasses
+     * reject a list that uses the first three, so a drawing that does is left out for them
+     * (see [RetainedDrawing.minFirmwareRevision]). Keep in sync with the caps string in g2flash
+     * patches/settings_ext.c.
+     */
+    const val ANIMATION_FIRMWARE_REVISION = 45
+
     /** Fixed-width resource/legacy fields, separate from the draw numeric codec. */
     fun u16(b: ByteArray, p: Int): Int = (b[p].toInt() and 255) or ((b[p + 1].toInt() and 255) shl 8)
     fun word(n: Int) = byteArrayOf(n.toByte(), (n ushr 8).toByte())
@@ -42,17 +68,22 @@ object DrawProtocol {
         require(depth == null || depth in -128..127)
         val flags = (if (target == null) 0 else DRAW_FLAG_RESOURCE_TARGET) or
             (if (depth == null) 0 else DRAW_FLAG_DEPTH) or
-            (if (clip == null) 0 else DRAW_FLAG_CLIP)
+            (if (clip == null) 0 else if (clip.animated) DRAW_FLAG_CLIP_ANIMATED else DRAW_FLAG_CLIP)
         return encode {
             writeU8(op)
             writeU8(flags)
             if (target != null) writeU16(target)
             if (depth != null) writeS8(depth)
-            if (clip != null) {
-                writeS16(clip.x)
-                writeS16(clip.y)
-                writeU16(clip.width)
-                writeU16(clip.height)
+            if (clip != null && clip.animated) {
+                writeExtended(clip.x)
+                writeExtended(clip.y)
+                writeExtended(clip.width)
+                writeExtended(clip.height)
+            } else if (clip != null) {
+                writeS16((clip.x as DrawValue.Integer).value)
+                writeS16((clip.y as DrawValue.Integer).value)
+                writeU16((clip.width as DrawValue.Integer).value)
+                writeU16((clip.height as DrawValue.Integer).value)
             }
             writeBytes(args)
         }
@@ -113,6 +144,30 @@ object DrawProtocol {
             writeU8(background)
             writeU8(border)
             if (outside != null) writeU8(outside)
+        }
+    }
+
+    fun line(
+        x0: Int, y0: Int, x1: Int, y1: Int, color: Int,
+        target: Int? = null, depth: Int? = null, clip: DrawClip? = null,
+    ): ByteArray = line(DrawValue.Integer(x0), DrawValue.Integer(y0), DrawValue.Integer(x1), DrawValue.Integer(y1),
+        color, target, depth, clip)
+
+    /**
+     * Revision 45: a one-pixel line in a 4-bit color, both endpoints included (equal ones draw a
+     * single pixel), overwriting what is there. It steps as GrayImage.drawLine does in TypeScript.
+     */
+    fun line(
+        x0: DrawValue, y0: DrawValue, x1: DrawValue, y1: DrawValue, color: Int,
+        target: Int? = null, depth: Int? = null, clip: DrawClip? = null,
+    ): ByteArray {
+        require(color in 0..15)
+        return call(DRAW_OP_LINE, target, depth, clip) {
+            writeExtended(x0)
+            writeExtended(y0)
+            writeExtended(x1)
+            writeExtended(y1)
+            writeU8(color)
         }
     }
 

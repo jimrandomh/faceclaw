@@ -337,6 +337,8 @@ class GlassesSessionCore(
     private var armLinksReleased = false
     internal val brightnessPolicy = BrightnessPolicy()
     internal var brightnessSentVisible: Boolean? = null
+    /** When a screen-off's blank frame may be sent, or 0 while none is held: see blankFrameHoldMsLocked. */
+    internal var blankFrameHeldUntilMs = 0L
     internal var brightnessSentLevel = -1
     internal var brightnessAlsStartedAt = -2000L
     internal var brightnessDemoPolling = false
@@ -542,7 +544,7 @@ class GlassesSessionCore(
     // firmware frees the cache with the fb lease, and after any resync the
     // cheap safe assumption is an empty cache (glyphs re-upload lazily).
     internal val resourceCache = ResourceCacheState()
-    internal val scenePlanner = ScenePlanner(resourceCache, platform)
+    internal val scenePlanner = ScenePlanner(resourceCache, platform) { faceclawFirmwareRevision }
     internal var desiredShellScene: ShellScene = ShellScene.EMPTY
 
     internal val pendingMessages = ArrayDeque<OutboundMessage>()

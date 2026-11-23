@@ -19,3 +19,10 @@ export function menuAnimationDurationMs(normalMs: number): number {
 export function setMenuAnimationReader(read: () => AnimationSpeed): void {
   readMenuAnimationSpeed = read;
 }
+
+let nextToken = 1;
+
+/** A fresh display-list timeline token, shared by all menu animations. */
+export function nextAnimationToken(): number {
+  return nextToken++;
+}

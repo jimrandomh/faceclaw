@@ -79,3 +79,69 @@ test("2x3 adds a bottom row without moving or resizing the first four slots", ()
     { x0: 288, y0: 288, x1: 575, y1: 288 },
   ]);
 });
+
+test("divider lines join across slots and grow from the point nearest the board's centre", () => {
+  const { dividerLines, SIX_SLOT_LAYOUT } = require("../.test-build/app/apps/glanceboard/layout.js");
+  const quadrants = resolveGlanceRegions(QUADRANT_LAYOUT, ["music", "compass", "nightscout", "health"], spans);
+  assert.deepEqual(dividerLines(QUADRANT_LAYOUT, quadrants), [
+    { x0: 288, y0: 0, x1: 288, y1: 287, originX: 288, originY: 144 },
+    { x0: 0, y0: 144, x1: 575, y1: 144, originX: 288, originY: 144 },
+  ]);
+  // A tall widget on the left: the line across stops at the middle and grows out from there.
+  const tall = resolveGlanceRegions(QUADRANT_LAYOUT, ["terminal", "music", "terminal", "none"], spans);
+  assert.deepEqual(dividerLines(QUADRANT_LAYOUT, tall), [
+    { x0: 288, y0: 0, x1: 288, y1: 287, originX: 288, originY: 144 },
+    { x0: 288, y0: 144, x1: 575, y1: 144, originX: 288, originY: 144 },
+  ]);
+  const six = resolveGlanceRegions(SIX_SLOT_LAYOUT, ["a", "b", "c", "d", "e", "f"], () => false);
+  assert.deepEqual(dividerLines(SIX_SLOT_LAYOUT, six), [
+    { x0: 288, y0: 0, x1: 288, y1: 431, originX: 288, originY: 216 },
+    { x0: 0, y0: 144, x1: 575, y1: 144, originX: 288, originY: 144 },
+    { x0: 0, y0: 288, x1: 575, y1: 288, originX: 288, originY: 288 },
+  ]);
+  assert.deepEqual(dividerLines(QUADRANT_LAYOUT, []).length, 2, "empty slots still have their lines");
+});
+
+test("the dividers follow the screen fade: a point while dark, whole once shown, and then exactly the painted lines", () => {
+  const { dividerLines } = require("../.test-build/app/apps/glanceboard/layout.js");
+  const { dividerFadeList } = require("../.test-build/app/apps/glanceboard/divider-list.js");
+  const { DrawOp, paintDisplayList } = require("../.test-build/app/graphics/display-list.js");
+  const { evaluate } = require("../.test-build/app/graphics/draw-expression.js");
+  const { GrayImage } = require("../.test-build/app/graphics/image.js");
+  const lines = dividerLines(QUADRANT_LAYOUT, resolveGlanceRegions(QUADRANT_LAYOUT, ["terminal", "music", "terminal", "none"], spans));
+  const list = dividerFadeList(lines, 1);
+  assert.equal(list.timeline, undefined, "nothing is timed: the glasses redraw for as long as the fade moves");
+  assert.deepEqual(list.calls.map((call) => [call.op, call.color]), [[DrawOp.LINE, 0], [DrawOp.LINE, 0], [DrawOp.LINE, 1], [DrawOp.LINE, 1]]);
+  const ends = (call, fade) => [call.x0, call.y0, call.x1, call.y1].map((value) => evaluate(value, 0, 0, fade).value);
+  const [vertical, across] = list.calls.slice(2);
+  assert.deepEqual([ends(vertical, 0), ends(vertical, 0.5), ends(vertical, 1)], [[288, 144, 288, 144], [288, 72, 288, 215], [288, 0, 288, 287]]);
+  assert.deepEqual([ends(across, 0), ends(across, 1)], [[288, 144, 288, 144], [288, 144, 575, 144]]);
+  assert.ok(ends(across, 0.25)[2] < 288 + 287 / 4, "eased: slower than linear at the start");
+  // The fade is the lines' only clock: no program reads time, so their speed is the fade's,
+  // whatever Settings > Customization > Animations > Screen fade makes it.
+  const { ExprOp } = require("../.test-build/app/graphics/draw-expression.js");
+  const opcodes = (code) => {
+    const found = [];
+    for (let at = 0; at < code.length;) {
+      const op = code[at++];
+      found.push(op);
+      if (op === ExprOp.F32) at += 4;
+      else if (op === ExprOp.I32) at += code[at] < 0x80 ? 1 : code[at] < 0xc0 ? 2 : code[at] < 0xe0 ? 3 : code[at] < 0xf0 ? 4 : 5;
+    }
+    return found;
+  };
+  const programs = list.calls.flatMap((call) => [call.x0, call.y0, call.x1, call.y1]).filter((value) => typeof value !== "number");
+  assert.ok(programs.length > 0);
+  for (const program of programs) {
+    const ops = opcodes(program.code);
+    assert.ok(ops.includes(ExprOp.FADE));
+    assert.ok(!ops.includes(ExprOp.TIME) && !ops.includes(ExprOp.ELAPSED), "nothing timed");
+  }
+  // Shown (as the phone always renders it), the list leaves the board's own lines as they are.
+  const board = new GrayImage(576, 288, 0);
+  for (const line of lines) board.drawLine(line.x0, line.y0, line.x1, line.y1, 20);
+  const level = (pixels) => Array.from(pixels, (v) => Math.min(15, (v + 8) >> 4));
+  const output = board.pixels.slice();
+  paintDisplayList(output, board.pixels, 576, 288, { displayList: list, x: 0, y: 0, width: 576, height: 288, depth: 0 });
+  assert.deepEqual(level(output), level(board.pixels));
+});

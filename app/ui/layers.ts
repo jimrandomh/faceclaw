@@ -319,17 +319,15 @@ export class LayerStack {
   }
 
   /**
-   * Pass a mirror touch to the base layer when nothing is stacked on it.
-   * With a layer stacked (a menu, a dialog) the touch is consumed without
-   * acting: positions mean nothing to the overlay, and falling back to a
-   * blind synthetic click would activate whatever happens to be highlighted
-   * rather than what was tapped.
+   * Pass a mirror touch to the top layer. A stacked layer that takes no
+   * touches (a menu, a dialog) consumes it without acting: positions mean
+   * nothing to it, and falling back to a blind synthetic click would
+   * activate whatever happens to be highlighted rather than what was tapped.
    */
   async hitTest(x: number, y: number): Promise<boolean> {
-    if (this.layers.length !== 1) return true;
-    const base = this.layers[0]!;
-    if (!base.hitTest) return false;
-    return await base.hitTest(x, y, this.ctx);
+    const top = this.layers[this.layers.length - 1]!;
+    if (!top.hitTest) return this.layers.length !== 1;
+    return await top.hitTest(x, y, this.ctx);
   }
 
   /** Hand text to the top layer; false if it doesn't take text input. */

@@ -1,5 +1,5 @@
 import { DrawExpression as E } from "../graphics/draw-expression";
-import { DrawOp, type DisplayList, type ListCall, type ListClip } from "../graphics/display-list";
+import { DrawOp, type AnimatedListClip, type DisplayList, type ListCall, type ListClip } from "../graphics/display-list";
 import { encodeReplayDraws } from "../graphics/glyph-wire";
 import { GrayImage, type UiFont } from "../graphics/image";
 import { slidingCoordinate } from "../graphics/menu-scroll-list";
@@ -18,6 +18,11 @@ import { shell } from "./shell/shell";
 /** Size of the square each grid cell reserves for its icon; render icons at this size. */
 export const ICON_GRID_ICON_SIZE = 44;
 const LABEL_GAP = 2;
+
+/** The height of a grid row in `font`, for a host sizing itself to a number of rows. */
+export function iconGridRowHeight(font: UiFont): number {
+  return iconGridMinRowHeight(font, ICON_GRID_ICON_SIZE, LABEL_GAP);
+}
 const DEFAULT_COLUMNS = 5;
 const DEFAULT_LABEL_VALUE = 210;
 /** Wide rows: text inset from the grid's left and right edges. */
@@ -148,7 +153,8 @@ export class IconGrid<T> {
 
   constructor(private readonly options: IconGridOptions<T>) {}
 
-  private get columns(): number {
+  /** Cells per grid row. */
+  get columns(): number {
     return this.options.columns ?? DEFAULT_COLUMNS;
   }
 
@@ -163,6 +169,12 @@ export class IconGrid<T> {
   /** Drop from item mode to row mode, keeping the selected row. */
   enterRowMode(): void {
     this.mode = "row";
+  }
+
+  /** Select a single cell, as the watch's scheme always does (see onFocus). */
+  enterItemMode(): void {
+    this.mode = "item";
+    this.clampSelection(this.buildRows());
   }
 
   /**
@@ -219,13 +231,16 @@ export class IconGrid<T> {
    * is scrolled to its start, and padBottom keeps the last row's that far
    * above its bottom at the end; rows scrolled past either are cut off at
    * the box's edge itself.
+   *
+   * `animate: false` paints the grid at rest, ending any motion: for a host
+   * that is drawing over part of it (the launcher, under an open folder).
    */
-  paint(image: GrayImage, viewportBox: MenuBox, focused: boolean): void {
+  paint(image: GrayImage, viewportBox: MenuBox, focused: boolean, { animate = true }: { animate?: boolean } = {}): void {
     const font = getDefaultSmallFont();
     const rows = this.buildRows();
     this.clampSelection(rows);
     const box = rowsBox(viewportBox, !!this.options.scrollbar);
-    const rowH = iconGridMinRowHeight(font, ICON_GRID_ICON_SIZE, LABEL_GAP);
+    const rowH = iconGridRowHeight(font);
     // A row's highlight already sits HIGHLIGHT_INSET_Y inside it.
     const lead = Math.max(0, (box.padTop ?? 0) - HIGHLIGHT_INSET_Y);
     const tail = Math.max(0, (box.padBottom ?? 0) - HIGHLIGHT_INSET_Y);
@@ -254,7 +269,59 @@ export class IconGrid<T> {
       const trackHeight = box.height - (box.padTop ?? 0) - (box.padBottom ?? 0);
       drawListScrollbar(image, viewportBox.x + viewportBox.width - SCROLLBAR_WIDTH, trackTop, trackHeight, this.scrollRow, fullRows, rows.length);
     }
-    this.paintMotion(image, rows, layout, font, focused, highlight);
+    this.paintMotion(image, rows, layout, font, focused, highlight, animate);
+  }
+
+  /**
+   * Centre of an item's icon square as last painted, in image coordinates:
+   * where something opening out of the item starts from. Null for a wide
+   * row, an index out of range, or before the first paint.
+   */
+  iconCenter(index: number): { x: number; y: number } | null {
+    const layout = this.layout;
+    if (!layout) return null;
+    const rows = this.buildRows();
+    const rowIndex = rows.findIndex((row) => index >= row.firstIndex && index < row.firstIndex + rowLength(row));
+    const row = rows[rowIndex];
+    if (!row || row.kind !== "cells") return null;
+    const font = getDefaultSmallFont();
+    const col = index - row.firstIndex;
+    return {
+      x: Math.round(layout.box.x + col * layout.colW + layout.colW / 2),
+      y: Math.round(rowTop(layout, rowIndex) + iconBlockOffset(layout.rowH, font) + ICON_GRID_ICON_SIZE / 2),
+    };
+  }
+
+  /**
+   * Display-list calls that draw the grid as its last paint left it: the
+   * highlight, then every row in view. For a host animating something over
+   * the grid, or the grid into view. `origin` is where the box's corner goes
+   * in the list's coordinates, and every call draws only inside `clip`
+   * (list coordinates too), which should not reach past the box: rows are
+   * not cut at the box's edge otherwise. Null before the first paint, and
+   * when a row holds something the glasses can't replay.
+   */
+  replayCalls(origin: { x: number; y: number }, clip: ListClip | AnimatedListClip, focused: boolean): ListCall[] | null {
+    const layout = this.layout;
+    if (!layout) return null;
+    const font = getDefaultSmallFont();
+    const rows = this.buildRows();
+    this.clampSelection(rows);
+    const { box, rowH, lead, scrollOffset } = layout;
+    const firstRow = Math.max(0, Math.floor((scrollOffset - lead) / rowH));
+    const lastRow = Math.min(rows.length, Math.ceil((scrollOffset + box.height - lead) / rowH));
+    const content = this.replayContent(rows, layout, font, firstRow, lastRow);
+    if (!content) return null;
+    const calls: ListCall[] = [];
+    const highlight = this.highlight(rows, layout, font, focused);
+    if (highlight) {
+      calls.push({ op: DrawOp.ROUNDED_RECT, x: origin.x + highlight.x - box.x, y: origin.y + highlight.y - box.y,
+        width: highlight.width, height: highlight.height, radius: highlight.radius,
+        background: focused ? highlightLevel(MENU_HIGHLIGHT_FILL) : 0, border: highlightLevel(MENU_HIGHLIGHT_STROKE), clip });
+    }
+    calls.push({ op: DrawOp.DRAWS, x: origin.x, y: origin.y + lead + firstRow * rowH - scrollOffset,
+      records: content.replay.records, count: content.replay.count, source: content.image, clip });
+    return calls;
   }
 
   async handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {
@@ -336,7 +403,7 @@ export class IconGrid<T> {
       target.drawText(font, x0 + WIDE_TEXT_X, y + wideTextOffset(rowH, font), truncateText(font, label, width), labelValue);
       return;
     }
-    const blockTop = y + Math.max(2, (rowH - ICON_GRID_ICON_SIZE - font.lineHeight - LABEL_GAP) / 2);
+    const blockTop = y + iconBlockOffset(rowH, font);
     for (let col = 0; col < row.items.length; col++) {
       const cell = this.options.describe(row.items[col]!, rowSelected && this.mode === "item" && col === this.selectedCol);
       const centerX = x0 + col * colW + colW / 2;
@@ -356,13 +423,18 @@ export class IconGrid<T> {
    * moving, retain the display list that animates them over the static paint.
    */
   private paintMotion(image: GrayImage, rows: readonly GridRow<T>[], layout: GridLayout, font: UiFont,
-      focused: boolean, highlight: Highlight | null): void {
+      focused: boolean, highlight: Highlight | null, animate: boolean): void {
     const now = Date.now();
     const { scrollOffset } = layout;
     const scroll = this.scrollMotion.paint(scrollOffset, layout.box, now);
     const slide = highlight
       ? this.highlightMotion.paint(highlight.key, scrollOffset, highlight.x, highlight.y, highlight.width, highlight.height, now, !!scroll)
       : undefined;
+    if (!animate) {
+      this.scrollMotion.cancel();
+      this.highlightMotion.cancel();
+      return;
+    }
     if (!scroll && !slide) return;
     const { box } = layout;
     const clip: ListClip = { x: 0, y: 0, width: box.width, height: box.height };
@@ -388,13 +460,9 @@ export class IconGrid<T> {
     const offsets = scroll ? [scroll.from, scroll.to, scroll.peak ?? scroll.to] : [scrollOffset];
     const firstRow = Math.max(0, Math.floor((Math.min(...offsets) - lead) / rowH));
     const lastRow = Math.min(rows.length, Math.ceil((Math.max(...offsets) + box.height - lead) / rowH));
-    const content = new GrayImage(box.width, Math.max(1, (lastRow - firstRow) * rowH));
-    for (let rowIndex = firstRow; rowIndex < lastRow; rowIndex++) {
-      this.drawRow(content, rows[rowIndex]!, rowIndex, 0, (rowIndex - firstRow) * rowH, layout, font);
-    }
-    if (content.pixels.some((value) => value !== 0)) return null;
-    const replay = encodeReplayDraws(content.draws);
-    if (!replay) return null;
+    const drawn = this.replayContent(rows, layout, font, firstRow, lastRow);
+    if (!drawn) return null;
+    const { image: content, replay } = drawn;
 
     // One timeline: the newer motion's. The other, if any, continues on it with a negative delay.
     const timeline = scroll && (!slide || scroll.startedAt >= slide.startedAt) ? scroll : slide!;
@@ -404,15 +472,31 @@ export class IconGrid<T> {
       let y = slidingCoordinate(highlight.y - box.y, slide?.dy ?? 0, slide, timeline.startedAt);
       // A bounce carries the highlight with its row.
       if (scroll?.peak !== undefined) y = y.add(E.i32(scroll.to)).sub(offset);
-      const q = (gray: number) => Math.min(15, (gray + 8) >> 4);
       calls.push({ op: DrawOp.ROUNDED_RECT, x: slidingCoordinate(highlight.x - box.x, slide?.dx ?? 0, slide, timeline.startedAt), y,
         width: highlight.width, height: highlight.height, radius: highlight.radius,
-        background: focused ? q(MENU_HIGHLIGHT_FILL) : 0, border: q(MENU_HIGHLIGHT_STROKE), clip });
+        background: focused ? highlightLevel(MENU_HIGHLIGHT_FILL) : 0, border: highlightLevel(MENU_HIGHLIGHT_STROKE), clip });
     }
     // Without a scroll the rows stay put; a literal keeps every compiled call small.
     const rowsY = scroll ? E.i32(lead + firstRow * rowH).sub(offset) : lead + firstRow * rowH - scrollOffset;
     calls.push({ op: DrawOp.DRAWS, x: 0, y: rowsY, records: replay.records, count: replay.count, source: content, clip });
     return { resources: [], timeline: { token: timeline.token, startedAt: timeline.startedAt }, calls };
+  }
+
+  /**
+   * Rows [firstRow, lastRow) drawn one under another from the top of an
+   * image of their own, with the same draws encoded for replay on the
+   * glasses. Null when they hold anything that can't be replayed.
+   */
+  private replayContent(rows: readonly GridRow<T>[], layout: GridLayout, font: UiFont, firstRow: number, lastRow: number):
+      { image: GrayImage; replay: { records: Uint8Array; count: number } } | null {
+    const { box, rowH } = layout;
+    const image = new GrayImage(box.width, Math.max(1, (lastRow - firstRow) * rowH));
+    for (let rowIndex = firstRow; rowIndex < lastRow; rowIndex++) {
+      this.drawRow(image, rows[rowIndex]!, rowIndex, 0, (rowIndex - firstRow) * rowH, layout, font);
+    }
+    if (image.pixels.some((value) => value !== 0)) return null;
+    const replay = encodeReplayDraws(image.draws);
+    return replay ? { image, replay } : null;
   }
 
   private async handleRingInput(event: InputEvent, ctx: LayerContext): Promise<void> {
@@ -615,6 +699,16 @@ function rowTop(layout: GridLayout, rowIndex: number): number {
 
 function rowLength<T>(row: GridRow<T>): number {
   return row.kind === "wide" ? 1 : row.items.length;
+}
+
+/** The top of a cell's icon and label block, relative to its row's top. */
+function iconBlockOffset(rowH: number, font: UiFont): number {
+  return Math.max(2, (rowH - ICON_GRID_ICON_SIZE - font.lineHeight - LABEL_GAP) / 2);
+}
+
+/** The display level of a highlight's gray8 fill or stroke. */
+function highlightLevel(gray: number): number {
+  return Math.min(15, (gray + 8) >> 4);
 }
 
 /** A wide row's text top, relative to the row's top. */

@@ -99,8 +99,18 @@ internal object ExtendedVarint {
     }
 }
 
-internal class DrawEvaluation(val elapsedMs: Long) {
+/**
+ * What an expression can read. [fade] is how far the screen is into being visible, from 0 (dark)
+ * to [FADE_ONE] (shown), and [fadeMoving] whether a wake or sleep fade is under way: the glasses
+ * sample both as they draw each frame. The phone's own renderings are of a shown screen.
+ */
+internal class DrawEvaluation(val elapsedMs: Long, val fade: Int = FADE_ONE, val fadeMoving: Boolean = false) {
     var animationPending = false
+
+    companion object {
+        /** Mirrors CFW_EXPR_FADE_ONE in g2flash/patches/brightness.h. */
+        const val FADE_ONE = 1024
+    }
 }
 
 /** Typed i32/f32 stack machine. Keep opcode IDs and semantics in sync with draw_expression.c. */
@@ -130,6 +140,8 @@ internal object DrawExpression {
     const val I2F = 48
     const val F2I = 49
     const val TIME = 50
+    /** Revision 45: push the screen fade as an f32, 0 (dark) to 1 (shown). */
+    const val FADE = 51
     const val LERP = 64
     const val SMOOTHSTEP = 65
     const val EASE_IN_QUAD = 66
@@ -224,6 +236,10 @@ internal object DrawExpression {
                         val time = frame.elapsedMs.coerceIn(0, maximum.toLong()).toInt()
                         if (time != maximum) pending = true
                         push(time)
+                    }
+                    FADE -> {
+                        pushFloat(frame.fade.toFloat() * (1f / DrawEvaluation.FADE_ONE.toFloat()))
+                        if (frame.fadeMoving) pending = true
                     }
                     LERP -> {
                         val t = float()

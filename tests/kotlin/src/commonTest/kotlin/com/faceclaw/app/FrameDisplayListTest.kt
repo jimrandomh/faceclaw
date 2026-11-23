@@ -164,6 +164,78 @@ class FrameDisplayListTest {
         assertFails { DrawProtocol.roundedRect(DrawValue.Integer(0), DrawValue.Integer(0), 8, 6, 3, 0, 3, outside = 16) }
     }
 
+    // Lines and an animated clip (display-list-authoring.test.cjs): a fixed line, one whose far
+    // end moves, a clear whose clip widens, and a clipped line at depth 2, 100 of 200 ms into
+    // their timeline, with what they paint over a nibble-1 16x8 screen at 0, 100 and 200 ms.
+    private val animated = "07af000000020001000c000600000900000064000000000004000a000000000b00040a00000601ff25020000c04002000030410180c8800180c8161101001732800180c81610300180c830234031ff25020000803f020000a0400180c8800180c8161101001732800180c81610300180c8302340310c4900000002ff25020000000002000000410180c8800180c8161101001732800180c81610300180c83023403103078a02000000020004000200010501010f"
+    private val animatedPixels = listOf(
+        "1111111111111111114444444444441111111111c11111111111f111111111111111f11111111111111111111111111111111111111111111111111111111111",
+        "1111111111111111114444444444441111111111c11111111177f7111c1111111177f71111c11111117777111111111111111111111111111111111111111111",
+        "1111111111111111114444444444441111111111c11111111177f777771111111177f77777cc1111117777777711c1111111111111111c111111111111111111",
+    )
+
+    @Test fun linesAndAnimatedClipsBridgeAndPaintLikeTheSoftwareRenderer() {
+        val list = read(hex(animated), 1100)
+        assertEquals(DrawProtocol.ANIMATION_FIRMWARE_REVISION, list.minFirmwareRevision)
+        fun pixels(now: Long, sincePresent: Long): String {
+            val calls = list.calls(IntArray(0), now)
+            assertEquals(listOf(DRAW_OP_LINE, DRAW_OP_LINE, DRAW_OP_CLEAR, DRAW_OP_LINE), calls.map { it[0].toInt() })
+            assertEquals(listOf(DRAW_FLAG_DEPTH, DRAW_FLAG_DEPTH, DRAW_FLAG_DEPTH or DRAW_FLAG_CLIP_ANIMATED, DRAW_FLAG_DEPTH or DRAW_FLAG_CLIP),
+                calls.map { it[1].toInt() })
+            val target = DisplayListRenderer.Target(ByteArray(64) { 0x11 }, 16, 8)
+            DisplayListRenderer(emptyMap()).execute(DrawProtocol.sequence(calls), target, elapsedMs = sincePresent)
+            return (0 until 128).joinToString("") { target.get(it % 16, it / 16).toString(16) }
+        }
+        assertEquals(animatedPixels[0], pixels(1000, 0))
+        assertEquals(animatedPixels[1], pixels(1100, 0))
+        assertEquals(animatedPixels[2], pixels(1100, 100), "time runs on from the PRESENT")
+        assertEquals(animatedPixels[2], pixels(1200, 0))
+        // Moving the surface moves the lines and the clip with it.
+        val moved = list.translated(1, 1).calls(IntArray(0), 1200)
+        val target = DisplayListRenderer.Target(ByteArray(64) { 0x11 }, 16, 8)
+        DisplayListRenderer(emptyMap()).execute(DrawProtocol.sequence(moved), target)
+        for (y in 1 until 8) for (x in 1 until 16) {
+            assertEquals(animatedPixels[2][(y - 1) * 16 + x - 1].digitToInt(16), target.get(x, y), "($x, $y)")
+        }
+    }
+
+    @Test fun olderFirmwareIsSentTheSceneWithoutDrawingsItCannotRun() {
+        val lines = read(hex(animated), 1100)
+        val highlight = read(hex(menu))
+        assertEquals(0, highlight.minFirmwareRevision)
+        val scene = ShellScene(emptyList(), listOf(highlight, lines, highlight))
+        val copy = DrawProtocol.screenCopy(640, 480).size
+        fun ops(revision: Int) = scene.calls(640, 480, IntArray(0), IntArray(0), revision).drop(copy).map { it[0].toInt() }
+        val every = listOf(DRAW_OP_ROUNDED_RECT, DRAW_OP_LINE, DRAW_OP_LINE, DRAW_OP_CLEAR, DRAW_OP_LINE, DRAW_OP_ROUNDED_RECT)
+        assertEquals(every, scene.calls(640, 480, IntArray(0), IntArray(0)).drop(copy).map { it[0].toInt() }, "the phone's own rendering")
+        assertEquals(every, ops(DrawProtocol.ANIMATION_FIRMWARE_REVISION))
+        assertEquals(listOf(DRAW_OP_ROUNDED_RECT, DRAW_OP_ROUNDED_RECT), ops(DrawProtocol.ANIMATION_FIRMWARE_REVISION - 1))
+        assertEquals(listOf(DRAW_OP_ROUNDED_RECT, DRAW_OP_ROUNDED_RECT), ops(-1), "stock or unknown firmware")
+        // A program that reads the screen fade needs the newer firmware too; one that only reads time does not.
+        val fade = hex(menu).also { bytes ->
+            val at = bytes.indices.first { bytes[it] == 0x30.toByte() && bytes[it + 1] == 0x02.toByte() }
+            bytes[at] = DrawExpression.FADE.toByte() // I2F -> FADE: the same length, a different program
+        }
+        assertEquals(DrawProtocol.ANIMATION_FIRMWARE_REVISION, read(fade).minFirmwareRevision)
+    }
+
+    @Test fun aSurfaceAboveTheShellKeepsItsOwnDrawingsAndDropsThoseUnderIt() {
+        // The Glanceboard's surface covers the regular UI: a window's drawings under it would
+        // show through, its own (the dividers that follow the screen fade) belong over it.
+        val c = SurfaceCompositor()
+        c.configureScreen(16, 8)
+        c.configureSurface("window", 0, 0, 16, 8, 0, SurfaceCompositor.TRANSPARENCY_OPAQUE)
+        c.configureSurface("glance", 0, 0, 16, 8, 900, SurfaceCompositor.TRANSPARENCY_OPAQUE)
+        c.submitSurface("window", ArrayByteReader(ByteArray(128) { 0x40 }), 0, 0, 16, 8, "w", ArrayByteReader(hex(menu)))
+        c.submitSurface("glance", ArrayByteReader(ByteArray(128) { 0x10 }), 0, 0, 16, 8, "g", ArrayByteReader(hex(animated)))
+        fun ops() = c.composite().shellScene.let { scene ->
+            scene.calls(16, 8, IntArray(0), IntArray(0)).drop(DrawProtocol.screenCopy(16, 8).size).map { it[0].toInt() }
+        }
+        assertEquals(listOf(DRAW_OP_LINE, DRAW_OP_LINE, DRAW_OP_CLEAR, DRAW_OP_LINE), ops())
+        c.setSurfaceVisible("glance", false)
+        assertEquals(listOf(DRAW_OP_ROUNDED_RECT), ops())
+    }
+
     @Test fun replayWithAnUnknownRecordDrawsNothing() {
         val list = read(registeredReplay(imageKnown = false), 1100)
         assertTrue(list.resources.isEmpty())

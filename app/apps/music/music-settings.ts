@@ -30,7 +30,7 @@ export class MusicSettingsLayer implements Layer {
         const duplicateName = apps.some((other) => other !== app && other.appName === app.appName);
         const label = duplicateName ? `${app.appName} (${app.packageName})` : app.appName;
         drawToggleMenuItem(image, font, x, y, width, truncateText(font, label, width - 48),
-          isMediaAppEnabled(app.packageName), selected);
+          isMediaAppEnabled(app.packageName), selected, `media-app:${app.packageName}`);
       },
     }));
     if (!items.length) items.push({ label: "No media apps discovered yet.", disabled: true, onSelect: () => {} });

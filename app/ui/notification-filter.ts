@@ -23,7 +23,7 @@ export class NotificationFilterLayer implements Layer {
       render: ({ image, x, y, width, selected }) => {
         const font = getDefaultSmallFont();
         drawToggleMenuItem(image, font, x, y, width, truncateText(font, source.appName, width - 48),
-          shouldShowNotificationOnGlasses(source.packageName), selected);
+          shouldShowNotificationOnGlasses(source.packageName), selected, `notification-filter:${source.packageName}`);
       },
     }));
     if (!items.length) items.push({ label: "No notification sources discovered yet.", disabled: true, onSelect: () => {} });

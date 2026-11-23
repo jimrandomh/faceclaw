@@ -95,7 +95,7 @@ function configToggleItem(
     disabled,
     onSelect: () => toggle(),
     render: ({ image, x, y, width, selected }) => {
-      drawToggleMenuItem(image, getDefaultSmallFont(), x, y, width, label, isOn(), selected);
+      drawToggleMenuItem(image, getDefaultSmallFont(), x, y, width, label, isOn(), selected, `microphones:${label}`);
     },
   };
 }
@@ -250,6 +250,7 @@ function micSetupMenu(): MenuLayer {
             "4-mic capture (advanced)",
             loadMicConfig().armHardware,
             selected,
+            "microphones:arm-hardware",
           );
         },
       },

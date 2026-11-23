@@ -1,8 +1,15 @@
 import { menuHighlightList } from "./menu-highlight-list";
+import {
+  TOGGLE_KNOB_INSET, TOGGLE_KNOB_RADIUS, TOGGLE_KNOB_SIZE, TOGGLE_SWITCH_HEIGHT, TOGGLE_SWITCH_WIDTH, TOGGLE_TRACK_RADIUS,
+  toggleSwitchList, toggleSwitchLook, type ToggleSwitchAnimation,
+} from "./toggle-switch-list";
 import { encodeDisplayList, dimDisplayList, paintDisplayList, type DisplayList } from "./display-list";
 import type { MenuHighlightAnimation } from "../ui/menu-highlight-motion";
 import { Glyph } from "./bdffont";
 import { wrapText } from "./textwrap";
+
+// For callers that lay a switch out (ui/menu.ts) without importing more than this module.
+export { TOGGLE_SWITCH_HEIGHT, TOGGLE_SWITCH_WIDTH, type ToggleSwitchAnimation } from "./toggle-switch-list";
 
 // This file is also built by tests/tsconfig.json, which has no DOM or Node types.
 declare const console: { warn(message: string): void };
@@ -539,6 +546,23 @@ export class GrayImage {
    */
   drawMenuHighlight(x: number, y: number, width: number, height: number, background: number, border: number, radius = 8, animation?: MenuHighlightAnimation): void {
     this.drawDisplayList(menuHighlightList(width, height, background, border, radius, animation), x, y, width, height);
+  }
+
+  /**
+   * A toggle switch with its top-left corner at (x, y), TOGGLE_SWITCH_WIDTH by
+   * TOGGLE_SWITCH_HEIGHT, on or off; `selected` says its row is the selected
+   * one. With an animation, the glasses play the flip to that state over the
+   * painted switch (see toggleSwitchList).
+   */
+  drawToggleSwitch(x: number, y: number, on: boolean, selected: boolean, animation?: ToggleSwitchAnimation): void {
+    const left = x | 0, top = y | 0;
+    const look = toggleSwitchLook(on, selected);
+    this.fillRoundedRect(left, top, TOGGLE_SWITCH_WIDTH, TOGGLE_SWITCH_HEIGHT, look.fill, TOGGLE_TRACK_RADIUS);
+    this.drawRoundedRect(left, top, TOGGLE_SWITCH_WIDTH, TOGGLE_SWITCH_HEIGHT, look.outline, TOGGLE_TRACK_RADIUS);
+    this.fillRoundedRect(left + look.knobX, top + TOGGLE_KNOB_INSET, TOGGLE_KNOB_SIZE, TOGGLE_KNOB_SIZE, look.knob, TOGGLE_KNOB_RADIUS);
+    if (animation) {
+      this.drawDisplayList(toggleSwitchList(on, selected, animation), left, top, TOGGLE_SWITCH_WIDTH, TOGGLE_SWITCH_HEIGHT);
+    }
   }
 
   /**

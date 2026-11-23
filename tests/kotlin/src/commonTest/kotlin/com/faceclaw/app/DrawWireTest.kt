@@ -24,6 +24,10 @@ class DrawWireTest {
             // Revision 35: the clip rect follows target and depth.
             DrawProtocol.clear(3, target = 511, clip = DrawClip(-1, 2, 3, 4)) to "0905ff01ffff02000300040003",
             DrawProtocol.image(7, 1, 2, depth = 2, clip = DrawClip(0, 0, 640, 480)) to "040602000000008002e001070001020f",
+            // Revision 45: a line's four extended coordinates and color; an animated clip's four extended fields.
+            DrawProtocol.line(-1, 2, 640, -480, 15, target = 511, depth = -2) to "0a03ff01fe7f028280be200f",
+            DrawProtocol.clear(3, clip = DrawClip.animated(DrawValue.Integer(-1), DrawValue.Integer(64),
+                DrawValue.Expression(hex("010832")), DrawValue.Integer(0))) to "09087f8040ff030108320003",
         )
         for ((call, expected) in calls) assertContentEquals(hex(expected), call)
         assertContentEquals(hex("0100050007027fff01"), DrawProtocol.sequence(listOf(calls[4].first)))

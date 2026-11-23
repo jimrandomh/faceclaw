@@ -246,7 +246,17 @@ class DisplayListRenderer(
             val depth = reader.readS8()
             if (!flat) target = target.shifted(DrawProtocol.depthOffset(depth, rightLens))
         }
-        if (flags and DRAW_FLAG_CLIP != 0) {
+        if (flags and DRAW_FLAG_CLIP_ANIMATED != 0) {
+            // Revision 45: the same rect, each field an extended value.
+            require(flags and DRAW_FLAG_CLIP == 0)
+            val x = ExtendedVarint.evaluate(reader, walk.frame)
+            val y = ExtendedVarint.evaluate(reader, walk.frame)
+            val w = ExtendedVarint.evaluate(reader, walk.frame)
+            val h = ExtendedVarint.evaluate(reader, walk.frame)
+            // A value outside its fixed field's range (a negative size, say) makes the clip empty.
+            val valid = x in -32768..32767 && y in -32768..32767 && w in 0..65535 && h in 0..65535
+            target = if (valid) target.clipped(x, y, w, h) else target.clipped(0, 0, 0, 0)
+        } else if (flags and DRAW_FLAG_CLIP != 0) {
             target = target.clipped(reader.readS16(), reader.readS16(), reader.readU16(), reader.readU16())
         }
         when (opcode) {
@@ -258,12 +268,39 @@ class DisplayListRenderer(
             DRAW_OP_REMAP_COLORS -> remapColors(reader, target, walk)
             DRAW_OP_ROUNDED_RECT -> drawRoundedRect(reader, target, walk)
             DRAW_OP_CLEAR -> clear(reader, target, walk)
+            DRAW_OP_LINE -> drawLine(reader, target, walk)
             DRAW_OP_DISPLAY_LIST -> {
                 val id = reader.readU16()
                 reader.requireDone()
                 executeList(id, target, walk)
             }
             else -> error("Unknown draw opcode $opcode")
+        }
+    }
+
+    /** Revision 45. The stepping is GrayImage.drawLine's, as in the firmware. */
+    private fun drawLine(reader: DrawReader, target: Target, walk: Walk) {
+        var x = ExtendedVarint.evaluate(reader, walk.frame)
+        var y = ExtendedVarint.evaluate(reader, walk.frame)
+        val endX = ExtendedVarint.evaluate(reader, walk.frame)
+        val endY = ExtendedVarint.evaluate(reader, walk.frame)
+        val color = reader.readU8()
+        reader.requireDone()
+        require(color <= 15)
+        if (!walk.apply) return
+        val limit = DRAW_LINE_COORDINATE_LIMIT
+        if (x !in -limit..limit || y !in -limit..limit || endX !in -limit..limit || endY !in -limit..limit) return
+        val dx = kotlin.math.abs(endX - x)
+        val stepX = if (x < endX) 1 else -1
+        val dy = -kotlin.math.abs(endY - y)
+        val stepY = if (y < endY) 1 else -1
+        var error = dx + dy
+        while (true) {
+            target.put(x, y, color)
+            if (x == endX && y == endY) break
+            val doubled = 2 * error
+            if (doubled >= dy) { error += dy; x += stepX }
+            if (doubled <= dx) { error += dx; y += stepY }
         }
     }
 

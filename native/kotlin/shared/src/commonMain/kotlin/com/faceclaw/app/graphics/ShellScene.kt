@@ -22,14 +22,20 @@ class ShellScene(val layers: List<Layer>, val selections: List<RetainedDrawing> 
      * scene moves as one; depths are even (see uiDepthSetting) so the per-lens halves add
      * exactly. Dim LUTs stay put: they cover the whole target, and a shifted one would leave an
      * undimmed strip at one edge.
+     *
+     * [firmwareRevision] is the glasses' Faceclaw revision when the list is for them (-1 when it
+     * is unknown, or they are not G2s): a retained drawing that needs a newer one is left out
+     * (its resources keep their places in [selected]).
      */
-    fun calls(width: Int, height: Int, surfaces: IntArray, selected: IntArray): List<ByteArray> {
+    fun calls(width: Int, height: Int, surfaces: IntArray, selected: IntArray, firmwareRevision: Int = Int.MAX_VALUE): List<ByteArray> {
         val calls = ArrayList<ByteArray>(); var rowId = 0
         val now = drawAnimationTimeMs()
         fun shifted(call: ByteArray) = DrawProtocol.withAddedDepth(call, screenDepth)
         calls.addAll(DrawProtocol.screenCopy(width, height, screenDepth))
         fun add(row: RetainedDrawing) {
-            for (call in row.calls(selected.copyOfRange(rowId, rowId + row.resources.size), now)) calls.add(shifted(call))
+            if (row.minFirmwareRevision == 0 || row.minFirmwareRevision <= firmwareRevision) {
+                for (call in row.calls(selected.copyOfRange(rowId, rowId + row.resources.size), now)) calls.add(shifted(call))
+            }
             rowId += row.resources.size
         }
         for (row in selections) add(row)

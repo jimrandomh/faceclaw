@@ -658,6 +658,71 @@ class GlassesSessionCoreTest {
     }
 
     @Test
+    fun faceclaw45FadesOutAheadOfItsBlankFrameAndAWakeInBetweenNeverSendsIt() {
+        val fadeMs = 1500
+        // The fade, and the tick the glasses can take to start it.
+        val holdMs = fadeMs + BRIGHTNESS_TICK_MS
+        fun run(extension: String, body: (Session, () -> List<Int?>, () -> List<Write>) -> Unit) {
+            val s = Session()
+            s.core.setRequiredFirmwareRevision(40)
+            s.link.firmwareExtension = extension
+            s.core.configureBrightness(false, 70, 2, 100, "0:0,1000:100", fadeMs)
+            s.core.configureCompositorScreen(160, 96)
+            s.core.configureSurface("s", 0, 0, 64, 32, 0, SurfaceCompositor.TRANSPARENCY_OPAQUE)
+            s.startAndAwaitLayout()
+            try {
+                fun type(write: Write) = write.message?.firstOrNull()?.toInt()?.and(CFW_MSG_TYPE_MASK)
+                fun display() = s.link.writes
+                    .filter { it.sid == CfwTransport.SID && it.address == LEFT && (it.kind == "resources" || it.kind == "image") }
+                    .map { type(it) }
+                fun outputs() = s.link.writes.filter { it.address == LEFT && it.kind == "brightness-output" }
+                s.submitFrame(1, 0x70, 1)
+                assertTrue(waitUntil(5_000) { s.displayedMatchesDesired() }, s.host.logs().takeLast(20).toString())
+                body(s, ::display, ::outputs)
+            } finally { s.core.close() }
+        }
+        run("Faceclaw/45") { s, display, outputs ->
+            val shown = display().size
+            s.core.setScreenBlanked(true)
+            // The glasses start fading at once, and keep the frame they have to animate.
+            assertTrue(waitUntil(5_000) { outputs().lastOrNull()?.message?.get(3) == 0.toByte() }, s.host.logs().takeLast(20).toString())
+            assertContentEquals(byteArrayOf(30, 1, 70, 0, fadeMs.toByte(), (fadeMs shr 8).toByte()), outputs().last().message)
+            assertFalse(waitUntil(300) { display().size > shown }, "the blank frame waits for the fade")
+            assertTrue(s.host.hasLog("holding the blank frame ${holdMs}ms for the fade-out"))
+            // Woken mid-fade: the blank frame is never sent. The frame the glasses hold is the
+            // one wanted, so a bare PRESENT gives them something to fade back in on.
+            s.core.setScreenBlanked(false)
+            // (The frame on the glasses never stopped being the wanted one, so wait for the PRESENT itself.)
+            assertTrue(waitUntil(5_000) { outputs().last().message!![3] == 1.toByte() && display().size > shown && s.displayedMatchesDesired() },
+                s.host.logs().takeLast(20).toString())
+            assertEquals(listOf<Int?>(CFW_MSG_PRESENT), display().drop(shown))
+            val writes = s.link.writes.filter { it.address == LEFT }
+            assertTrue(writes.indexOfLast { it.kind == "brightness-output" } < writes.indexOfLast { it.message?.firstOrNull() == CFW_MSG_PRESENT.toByte() },
+                "the wake's brightness precedes its PRESENT")
+            // Left to run out, the fade is followed by the blank frame.
+            val awake = display().size
+            s.core.setScreenBlanked(true)
+            assertTrue(waitUntil(5_000) { outputs().last().message!![3] == 0.toByte() })
+            assertFalse(waitUntil(200) { display().size > awake })
+            s.platform.offsetMs += holdMs
+            s.core.interruptibleSleep.interrupt()
+            assertTrue(waitUntil(5_000) { s.displayedMatchesDesired() && display().size > awake }, s.host.logs().takeLast(20).toString())
+            assertEquals(CFW_MSG_PRESENT, display().last())
+            assertTrue(CFW_MSG_DRAW_CALLS in display().drop(awake), "the blank frame's pixels")
+            val visibility = outputs().map { it.message!![3].toInt() }
+            assertEquals(listOf(0, 1, 0), visibility.filterIndexed { i, v -> i == 0 || visibility[i - 1] != v }.takeLast(3))
+        }
+        // Older firmware freezes the frame for the whole fade, so nothing is gained by waiting.
+        run("Faceclaw/44") { s, display, outputs ->
+            val shown = display().size
+            s.core.setScreenBlanked(true)
+            assertTrue(waitUntil(5_000) { s.displayedMatchesDesired() && display().size > shown && outputs().lastOrNull()?.message?.get(3) == 0.toByte() },
+                s.host.logs().takeLast(20).toString())
+            assertFalse(s.host.hasLog("holding the blank frame"))
+        }
+    }
+
+    @Test
     fun faceclaw44StartsASessionInOneMessageAndKeepsResourcesThroughALapsedLease() {
         val s = Session()
         s.core.setRequiredFirmwareRevision(40)

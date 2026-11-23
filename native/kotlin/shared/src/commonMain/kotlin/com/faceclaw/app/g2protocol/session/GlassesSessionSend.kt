@@ -210,6 +210,10 @@ internal fun GlassesSessionCore.driveSession(): Long {
                 val head = pendingMessages.firstOrNull()
                 val headFits = windowHasRoom || (!benchmarkActive && head != null
                         && CfwMessageWindow.admitsSmallMessage(inFlightMessages, head))
+                // A blank frame waiting out the fade-out is not ready yet.
+                val blankHoldMs = if (shutdownRequested || benchmarkActive || !fixedLayoutCreated) 0L
+                        else blankFrameHoldMsLocked(now)
+                val frameToEnqueue = blankHoldMs == 0L && desiredFingerprintSnapshot() != lastEnqueuedFingerprint
                 // A frame ready to send right now: don't inject a fresh
                 // heartbeat in front of it (the image's own ack resets the
                 // firmware heartbeat timer, so the heartbeat is redundant).
@@ -227,8 +231,7 @@ internal fun GlassesSessionCore.driveSession(): Long {
                         && !hasPendingOrInflightKindLocked("heartbeat")
                         && (benchmarkActive
                             || (now >= imageRetryAfterMs
-                                && (hasPendingImageLocked()
-                                    || desiredFingerprintSnapshot() != lastEnqueuedFingerprint)))
+                                && (hasPendingImageLocked() || frameToEnqueue)))
                 noteImageStallLocked(now, windowHasRoom, headFits)
                 val heartbeatStep = if (messageToPrewrite == null) heartbeatStepLocked(imageWaiting) else HeartbeatStep.NONE
                 if (heartbeatStep == HeartbeatStep.HOLD) {
@@ -249,7 +252,7 @@ internal fun GlassesSessionCore.driveSession(): Long {
                         && fixedLayoutCreated
                         && windowHasRoom && !hasPendingImageLocked()
                         && now >= imageRetryAfterMs
-                        && desiredFingerprintSnapshot() != lastEnqueuedFingerprint) {
+                        && frameToEnqueue) {
                     // Enqueue the next frame's delta against lastEnqueuedPacked
                     // (what the shadow will be), so it can pipeline behind an
                     // image still awaiting its ack.
@@ -263,7 +266,7 @@ internal fun GlassesSessionCore.driveSession(): Long {
                 } else if (messageToPrewrite == null && (!pendingMessages.isEmpty() || !inFlightMessages.isEmpty())) {
                     return ConnectionOptions.IDLE_SLEEP_MS.toLong()
                 } else if (messageToPrewrite == null) {
-                    return 250
+                    return if (blankHoldMs > 0L) minOf(250L, blankHoldMs) else 250
                 }
             }
         }
@@ -924,6 +927,7 @@ internal fun GlassesSessionCore.enqueueDesiredImageLocked() {
         else BmpUtil.pack4bppFromGray8(graySnapshot, width, height)
     frameTimings.spanEnd(frameId, "pack-4bpp")
     // Visibility belongs to this immutable composite, not the latest UI request.
+    blankFrameHeldUntilMs = 0L
     enqueueBrightnessLocked(!isBlankedFingerprint(fingerprint))
     if (isG1 && packedFrame.size > 0) {
         g1EnqueueFrameLocked(packedFrame, width, height, scene, fingerprint, paintMs, frameId)

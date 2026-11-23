@@ -120,3 +120,37 @@ export function slotDividers(layout: GlanceLayout, regions: readonly GlanceRegio
   });
   return dividers;
 }
+
+/**
+ * A whole divider: slot dividers that continue one another, joined, with the
+ * point it grows from as the board appears. That is the point on it nearest
+ * the board's centre, so the lines spread outwards from where they meet.
+ */
+export type GlanceDividerLine = GlanceDivider & { originX: number; originY: number };
+
+/** slotDividers as whole lines (see GlanceDividerLine), verticals first, each group in board order. */
+export function dividerLines(layout: GlanceLayout, regions: readonly GlanceRegion[]): GlanceDividerLine[] {
+  const centerX = Math.floor(layout.width / 2);
+  const centerY = Math.floor(layout.height / 2);
+  const between = (value: number, low: number, high: number) => Math.max(low, Math.min(high, value));
+  const dividers = slotDividers(layout, regions);
+  const lines: GlanceDividerLine[] = [];
+  const vertical = dividers.filter((line) => line.x0 === line.x1).sort((a, b) => a.x0 - b.x0 || a.y0 - b.y0);
+  for (const part of vertical) {
+    const last = lines[lines.length - 1];
+    if (last && last.x0 === part.x0 && last.y1 + 1 === part.y0) last.y1 = part.y1;
+    else lines.push({ ...part, originX: part.x0, originY: 0 });
+  }
+  const firstHorizontal = lines.length;
+  const horizontal = dividers.filter((line) => line.x0 !== line.x1).sort((a, b) => a.y0 - b.y0 || a.x0 - b.x0);
+  for (const part of horizontal) {
+    const last = lines.length > firstHorizontal ? lines[lines.length - 1] : undefined;
+    if (last && last.y0 === part.y0 && last.x1 + 1 === part.x0) last.x1 = part.x1;
+    else lines.push({ ...part, originX: 0, originY: part.y0 });
+  }
+  lines.forEach((line, index) => {
+    if (index < firstHorizontal) line.originY = between(centerY, line.y0, line.y1);
+    else line.originX = between(centerX, line.x0, line.x1);
+  });
+  return lines;
+}

@@ -6,7 +6,12 @@ import kotlin.jvm.JvmOverloads
  * The delta base contains only app pixels, except in frames that bake shell content (see [plan]).
  * Shell resources are composed at presentation.
  */
-class ScenePlanner(private val cache: ResourceCacheState, private val platform: ProtocolPlatform = protocolPlatform()) {
+class ScenePlanner(
+    private val cache: ResourceCacheState,
+    private val platform: ProtocolPlatform = protocolPlatform(),
+    /** The connected glasses' Faceclaw firmware revision: see ShellScene.calls. */
+    private val firmwareRevision: () -> Int = { Int.MAX_VALUE },
+) {
     /**
      * [bakedLayers] and [bakedSelections] say what a frame over the resource budget baked into its
      * pixels. [timing] says where the planning time went, for the frame log.
@@ -95,7 +100,7 @@ class ScenePlanner(private val cache: ResourceCacheState, private val platform: 
         val startedAt = platform.elapsedRealtimeMs()
         val frame = baked?.invoke() ?: screen
         commands.addAll(cache.drainCommands())
-        val rootCalls = scene.calls(width, height, ids, selectedIds)
+        val rootCalls = scene.calls(width, height, ids, selectedIds, firmwareRevision())
         // Every draw of the frame, into the surfaces and then the screen, goes out as one message
         // (one write and one ACK; more only past the message size limit): uploads the draws need
         // are sent ahead of it.

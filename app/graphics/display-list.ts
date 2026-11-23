@@ -7,15 +7,26 @@ export const SCREEN = 65535;
  * Firmware opcodes, plus DRAWS: a bridge-only call that replays glyph and icon
  * draws (from glyph-wire's encodeReplayDraws) as firmware image/text calls.
  */
-export const DrawOp = { RECT_COPY: 2, IMAGE: 4, ROUNDED_RECT: 8, CLEAR: 9, DRAWS: 32 } as const;
+export const DrawOp = { RECT_COPY: 2, IMAGE: 4, ROUNDED_RECT: 8, CLEAR: 9, LINE: 10, DRAWS: 32 } as const;
 export const DISPLAY_LIST_RECORD = 7;
 /** Bridge opcode bit: a clip rect follows the call's depth. */
 const CLIPPED = 128;
+/** Bridge opcode bit: the clip follows as four extended values instead (an AnimatedListClip). */
+const CLIP_ANIMATED = 64;
+/** A line with an endpoint coordinate further out than this draws nothing (DRAW_LINE_COORDINATE_LIMIT in DrawFlags.kt). */
+const LINE_COORDINATE_LIMIT = 4096;
 /** Bridge sentinel for a rounded rect without an outside color. */
 const NO_OUTSIDE = 16;
 export type ListImage = { readonly width: number; readonly height: number; readonly pixels: Uint8Array };
 /** Revision 35: a call draws only inside its clip, in list coordinates (and moves with its depth). */
 export type ListClip = { readonly x: number; readonly y: number; readonly width: number; readonly height: number };
+/**
+ * Revision 45: a clip whose fields may be expressions, so it can open, close
+ * or move over time. A field that evaluates outside the fixed clip's ranges
+ * (x, y: -32768..32767; width, height: 0..65535) makes the clip empty, so a
+ * negative width or height draws nothing.
+ */
+export type AnimatedListClip = { readonly animated: true; readonly x: DrawValue; readonly y: DrawValue; readonly width: DrawValue; readonly height: DrawValue };
 export type ListCall = (
   /**
    * The background max-blends (0 leaves the interior alone); border 16 draws no
@@ -28,11 +39,21 @@ export type ListCall = (
   /** Fill with a 4-bit color: the clip rect when there is one, else the whole screen. */
   | { op: typeof DrawOp.CLEAR; color: number }
   /**
+   * Revision 45: a one-pixel line in a 4-bit color from (x0, y0) to (x1, y1),
+   * both included, stepped as GrayImage.drawLine steps. Equal endpoints draw
+   * one pixel.
+   */
+  | { op: typeof DrawOp.LINE; x0: DrawValue; y0: DrawValue; x1: DrawValue; y1: DrawValue; color: number }
+  /**
    * Glyph and icon draws offset by (x, y). `records`/`count` are the wire form;
    * `source` holds the same draws for software painting (a decoded list has none).
    */
   | { op: typeof DrawOp.DRAWS; x: DrawValue; y: DrawValue; records: Uint8Array; count: number; source?: GrayImage }
-) & { depth?: number; clip?: ListClip };
+) & { depth?: number; clip?: ListClip | AnimatedListClip };
+
+function isAnimatedClip(clip: ListClip | AnimatedListClip): clip is AnimatedListClip {
+  return 'animated' in clip;
+}
 export type DisplayList = {
   readonly resources: readonly ListImage[];
   readonly calls: readonly ListCall[];
@@ -88,10 +109,17 @@ export function encodeDisplayList(placed: PlacedDisplayList, now = Date.now()): 
   }
   integer(list.calls.length, 0, 4096); out.u16(list.calls.length);
   for (const call of list.calls) {
-    out.u8(call.op | (call.clip ? CLIPPED : 0)); out.i16(call.depth ?? 0);
+    const clip = call.clip;
+    out.u8(call.op | (!clip ? 0 : isAnimatedClip(clip) ? CLIP_ANIMATED : CLIPPED)); out.i16(call.depth ?? 0);
     integer(placed.depth + (call.depth ?? 0), -128, 127);
-    if (call.clip) { out.i16(call.clip.x); out.i16(call.clip.y); out.u16(call.clip.width); out.u16(call.clip.height); }
-    if (call.op === DrawOp.ROUNDED_RECT) {
+    if (clip) {
+      if (isAnimatedClip(clip)) for (const value of [clip.x, clip.y, clip.width, clip.height]) out.raw(encodeValue(value));
+      else { out.i16(clip.x); out.i16(clip.y); out.u16(clip.width); out.u16(clip.height); }
+    }
+    if (call.op === DrawOp.LINE) {
+      for (const value of [call.x0, call.y0, call.x1, call.y1]) out.raw(encodeValue(value));
+      out.u8(integer(call.color, 0, 15));
+    } else if (call.op === DrawOp.ROUNDED_RECT) {
       out.raw(encodeValue(call.x)); out.raw(encodeValue(call.y));
       out.u16(integer(call.width, 1, 640)); out.u16(integer(call.height, 1, 480)); out.u16(call.radius);
       out.u8(integer(call.background, 0, 15)); out.u8(integer(call.border, 0, 16));
@@ -132,10 +160,13 @@ export function readDisplayList(bytes: Uint8Array, offset: number, now = Date.no
   for (let i = 0; i < count; i++) { const w = r.u16(), h = r.u16(); resources.push({ width: w, height: h, pixels: r.take(w * h) }); }
   const calls: ListCall[] = [], callCount = r.u16(); integer(callCount, 0, 4096);
   for (let i = 0; i < callCount; i++) {
-    const header = r.u8(), op = header & ~CLIPPED, callDepth = r.i16();
-    const clip = header & CLIPPED ? { x: r.i16(), y: r.i16(), width: r.u16(), height: r.u16() } : undefined;
+    const header = r.u8(), op = header & ~(CLIPPED | CLIP_ANIMATED), callDepth = r.i16();
+    if (header & CLIPPED && header & CLIP_ANIMATED) throw new Error('A call has one clip');
+    const clip: ListClip | AnimatedListClip | undefined = header & CLIPPED ? { x: r.i16(), y: r.i16(), width: r.u16(), height: r.u16() }
+      : header & CLIP_ANIMATED ? { animated: true, x: readValue(r), y: readValue(r), width: readValue(r), height: readValue(r) } : undefined;
     const common = clip ? { depth: callDepth, clip } : { depth: callDepth };
-    if (op === DrawOp.ROUNDED_RECT) {
+    if (op === DrawOp.LINE) calls.push({ op, ...common, x0: readValue(r), y0: readValue(r), x1: readValue(r), y1: readValue(r), color: r.u8() });
+    else if (op === DrawOp.ROUNDED_RECT) {
       const call = { op, ...common, x: readValue(r), y: readValue(r), width: r.u16(), height: r.u16(), radius: r.u16(), background: r.u8(), border: r.u8() };
       const outside = r.u8();
       calls.push(outside === NO_OUTSIDE ? call : { ...call, outside });
@@ -171,7 +202,7 @@ export function dimDisplayList(list: DisplayList, factor: number): DisplayList {
   return { ...list, resources: list.resources.map(r => ({ ...r, pixels: r.pixels.map(dim) })),
     calls: list.calls.map(c => c.op === DrawOp.ROUNDED_RECT ? { ...c, background: Math.min(15, Math.round(c.background * factor)), border: c.border === 16 ? 16 : Math.min(15, Math.round(c.border * factor)),
         ...(c.outside === undefined ? {} : { outside: Math.min(15, Math.round(c.outside * factor)) }) }
-      : c.op === DrawOp.CLEAR ? { ...c, color: Math.min(15, Math.round(c.color * factor)) } : c) };
+      : c.op === DrawOp.CLEAR || c.op === DrawOp.LINE ? { ...c, color: Math.min(15, Math.round(c.color * factor)) } : c) };
 }
 
 /**
@@ -192,14 +223,31 @@ export function paintDisplayList(output: Uint8Array, screen: Uint8Array, width: 
   for (const c of placed.displayList.calls) {
     const depth = placed.depth + (c.depth ?? 0), shift = right ? -Math.floor((depth + 1) / 2) : Math.floor(depth / 2);
     // Writable region in screen pixels: the clip moves with the call's depth, like its content.
-    const clip = c.clip ? { x: placed.x + c.clip.x + shift, y: placed.y + c.clip.y, width: c.clip.width, height: c.clip.height }
-      : { x: 0, y: 0, width, height };
+    const at = (v: DrawValue) => evaluate(v, elapsed, presentTime).value;
+    const fields = c.clip && { x: at(c.clip.x), y: at(c.clip.y), width: at(c.clip.width), height: at(c.clip.height) };
+    const clip = !fields ? { x: 0, y: 0, width, height }
+      // An animated clip with a field out of range is empty, as on the glasses.
+      : fields.x < -32768 || fields.x > 32767 || fields.y < -32768 || fields.y > 32767 || fields.width < 0 || fields.width > 65535 || fields.height < 0 || fields.height > 65535
+        ? { x: 0, y: 0, width: 0, height: 0 }
+        : { x: placed.x + fields.x + shift, y: placed.y + fields.y, width: fields.width, height: fields.height };
     const writable = (x: number, y: number) => x >= 0 && y >= 0 && x < width && y < height &&
       x >= clip.x && y >= clip.y && x < clip.x + clip.width && y < clip.y + clip.height;
-    if (c.op === DrawOp.CLEAR) {
+    if (c.op === DrawOp.LINE) {
+      let x = at(c.x0), y = at(c.y0);
+      const endX = at(c.x1), endY = at(c.y1);
+      if ([x, y, endX, endY].some(v => Math.abs(v) > LINE_COORDINATE_LIMIT)) continue;
+      const dx = Math.abs(endX - x), stepX = x < endX ? 1 : -1, dy = -Math.abs(endY - y), stepY = y < endY ? 1 : -1;
+      for (let error = dx + dy; ;) {
+        const px = placed.x + x + shift, py = placed.y + y;
+        if (writable(px, py)) output[py * width + px] = c.color * 16;
+        if (x === endX && y === endY) break;
+        const doubled = 2 * error;
+        if (doubled >= dy) { error += dy; x += stepX; }
+        if (doubled <= dx) { error += dx; y += stepY; }
+      }
+    } else if (c.op === DrawOp.CLEAR) {
       for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) if (writable(x, y)) output[y * width + x] = c.color * 16;
     } else if (c.op === DrawOp.DRAWS) {
-      const at = (v: DrawValue) => evaluate(v, elapsed, presentTime).value;
       c.source?.paintReplayDraws(output, width, height, placed.x + at(c.x) + shift, placed.y + at(c.y), clip);
     } else if (c.op === DrawOp.ROUNDED_RECT) {
       const x = placed.x + evaluate(c.x, elapsed, presentTime).value + shift, y = placed.y + evaluate(c.y, elapsed, presentTime).value;
@@ -215,7 +263,6 @@ export function paintDisplayList(output: Uint8Array, screen: Uint8Array, width: 
     } else {
       const source = c.resource === SCREEN ? { width, height, pixels: screen } : placed.displayList.resources[c.resource];
       const w = c.op === DrawOp.IMAGE ? source.width : c.width, h = c.op === DrawOp.IMAGE ? source.height : c.height;
-      const at = (v: DrawValue) => evaluate(v, elapsed, presentTime).value;
       const sx = c.op === DrawOp.IMAGE ? 0 : at(c.x) + (c.resource === SCREEN ? placed.x : 0), sy = c.op === DrawOp.IMAGE ? 0 : at(c.y) + (c.resource === SCREEN ? placed.y : 0);
       const x = placed.x + (c.op === DrawOp.IMAGE ? c.x : at(c.dx)) + shift, y = placed.y + (c.op === DrawOp.IMAGE ? c.y : at(c.dy));
       for (let yy = 0; yy < h; yy++) for (let xx = 0; xx < w; xx++) {

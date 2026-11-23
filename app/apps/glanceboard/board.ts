@@ -1,7 +1,8 @@
-import { GrayImage } from "../../graphics/image";
+import { GrayImage, grayToNibble } from "../../graphics/image";
 import { onAnySettingChanged } from "../../ui/dashboard-settings";
 import { glanceLayout, glanceShowLinesSetting, glanceSlotSettings } from "./glanceboard-settings";
-import { resolveGlanceRegions, slotDividers, type GlanceLayout, type GlanceRegion } from "./layout";
+import { dividerFadeList } from "./divider-list";
+import { dividerLines, resolveGlanceRegions, type GlanceLayout, type GlanceRegion } from "./layout";
 import { type GlanceWidget } from "./widget";
 import { findGlanceWidget, glanceWidgetSpans } from "./widgets";
 
@@ -120,8 +121,18 @@ export class GlanceBoard {
   }
 }
 
+/**
+ * The hairlines between regions. They are drawn into the board's pixels, and
+ * again by a display list that follows the screen's fade: as the board fades
+ * in, each line grows out from the middle of the board to its full length,
+ * and as it fades out they shrink back. Glasses whose firmware can't run the
+ * list (and the phone's mirror, which doesn't fade) show the lines whole.
+ */
 function drawDividers(image: GrayImage, layout: GlanceLayout, regions: readonly GlanceRegion[]): void {
-  for (const line of slotDividers(layout, regions)) {
+  const lines = dividerLines(layout, regions);
+  if (!lines.length) return;
+  for (const line of lines) {
     image.drawLine(line.x0, line.y0, line.x1, line.y1, DIVIDER_VALUE);
   }
+  image.drawDisplayList(dividerFadeList(lines, grayToNibble(DIVIDER_VALUE)), 0, 0, layout.width, layout.height);
 }

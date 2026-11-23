@@ -15,23 +15,23 @@ export type G1FirmwareImage = {
 };
 
 export const G1V0_IMAGE: G1FirmwareImage = {
-  "version": "0.5.67",
-  "sha256": "548eed0647df7113e8b7999e0c54582b3182660f9cb5844ed72de252779f5f61",
-  "size": 583120,
-  "source": "d0786157f3ad",
+  "version": "0.5.68",
+  "sha256": "5f3c49156082b31b6ff2682eaba0951dfc7f185f75fac42ba1c2f4a9038a963c",
+  "size": 584016,
+  "source": "1a4c6c1ff016",
   "stockVersion": "1.6.6",
   "stockZipUrl": "https://cdn.evenreal.co/firmware/dcfa510c090e476c10a6f6c348a22415.zip",
   "stockZipSha256": "748836f2d9d092b0783cbb7672fdccec4f730051cad27f095bbb156ac3e5d316",
   "parts": [
     {
-      "offset": 271360,
+      "offset": 272256,
       "length": 226020,
       "file": "net_core_app_update.bin",
       "fileOffset": 0,
       "sha256": "c277749be97a2763742db399afeb10ca6916059abd60d41bbc05c8892c002c77"
     },
     {
-      "offset": 497408,
+      "offset": 498304,
       "length": 352,
       "file": "app_update.bin",
       "fileOffset": 531288,

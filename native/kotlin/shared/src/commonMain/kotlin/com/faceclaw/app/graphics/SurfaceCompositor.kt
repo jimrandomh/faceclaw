@@ -785,9 +785,12 @@ class SurfaceCompositor @JvmOverloads constructor(private val includePreviewInFr
             }
         }
         val screenDepth = screenDepthLocked(ordered)
-        val overlaid = surfaces.values.any { it.visible && it.zOrder > 1 }
-        val sceneLayers = if (overlaid) emptyList() else shellScene?.layers ?: emptyList()
-        val sceneSelections: List<RetainedDrawing> = if (overlaid) emptyList() else selections
+        // A surface above the shell (the Glanceboard, the lock screen) covers the regular UI: the
+        // shell's layers and the retained drawings of everything under it stay out of the scene.
+        // Its own drawings are over its own pixels, so those stay.
+        val overlay = ordered.lastOrNull { it.visible && it.zOrder > 1 }
+        val sceneLayers = if (overlay != null) emptyList() else shellScene?.layers ?: emptyList()
+        val sceneSelections: List<RetainedDrawing> = if (overlay != null) placedSelectionsLocked(overlay) else selections
         // Built per composite, a scene rebuilt its fingerprint and resource lists every time even
         // though its inputs (the decoded shell layers, cached placed selections) rarely change.
         val previous = lastScene
@@ -796,7 +799,7 @@ class SurfaceCompositor @JvmOverloads constructor(private val includePreviewInFr
             else ShellScene(sceneLayers, sceneSelections, screenDepth)
         lastScene = scene
         val sceneKey = fingerprint.append("|shell:").append(scene.fingerprint).toString()
-        val preview = if (includePreview && (shellScene != null || selections.isNotEmpty())) {
+        val preview = if (includePreview && (shellScene != null || sceneSelections.isNotEmpty())) {
             previewScene(scene, gray, sceneKey)
         } else {
             if (includePreview) {
