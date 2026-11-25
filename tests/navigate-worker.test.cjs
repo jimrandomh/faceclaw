@@ -11,7 +11,7 @@ const flush = () => new Promise(resolve => setImmediate(resolve));
 const route = { coordinates: [[-122.4, 37.7], [-122.4, 37.71]], distanceMeters: 1112, durationSec: 600,
   steps: [{ distanceMeters: 1112, durationSec: 600, instruction: 'Head north', maneuverType: 'depart' },
     { distanceMeters: 0, durationSec: 0, instruction: 'Arrive', maneuverType: 'arrive' }] };
-const fix = latitude => ({ latitude, longitude: -122.4, timestampMs: Date.now(), bearingDeg: 0, speedMps: 1.5, accuracyMeters: 5 });
+const fix = (latitude, accuracyMeters = 5) => ({ latitude, longitude: -122.4, timestampMs: Date.now(), bearingDeg: 0, speedMps: 1.5, accuracyMeters });
 function fixture() {
   const messages = [], timers = new Set(), timeouts = new Set(), holds = [], maps = [], errors = [], requests = [];
   let callbacks, compass, delayRoute = null, delayMap = null, routeError = null, distanceUnit = 'miles', timeFormat = '24h', paints = 0;
@@ -48,25 +48,30 @@ function fixture() {
   };
   const global = { postMessage: message => messages.push(message) };
   const source = fs.readFileSync(path.join(__dirname, '../app/apps/navigate/navigate-app.worker.ts'), 'utf8') +
-    '\nexports.probe = { startNavigation, startMap, stopNavigation, idleEntries, describeRouteStatus, state: () => ({ phase, headHeadingDeg, progress, mapImage, mapInFlight, mapLastError }) };';
+    '\nexports.probe = { startNavigation, startMap, stopNavigation, idleEntries, describeRouteStatus, limits: { FIRST_FIX_TIMEOUT_MS, SLOW_FIX_HINT_MS, TOOL_FIX_WAIT_MS },\n' +
+    '  state: () => ({ phase, statusMessage, headHeadingDeg, progress, mapImage, mapInFlight, mapLastError }) };';
   const exports = {};
   vm.runInNewContext(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText, {
     exports, global, Uint8Array,
-    setTimeout: fn => { timeouts.add(fn); return fn; }, clearTimeout: fn => timeouts.delete(fn),
+    setTimeout: (fn, delayMs) => { fn.delayMs = delayMs; timeouts.add(fn); return fn; }, clearTimeout: fn => timeouts.delete(fn),
     setInterval: fn => { timers.add(fn); return fn; }, clearInterval: fn => timers.delete(fn),
     console: { log() {}, warn() {}, error: error => errors.push(error) }, require: id => modules[id] ?? {},
   });
   const send = data => global.onmessage({ data });
   send({ type: 'open-window', windowId: 'navigate:main', surfaceId: 'window:navigate:main', title: 'Navigate', viewport: bordered(576, 480) });
   send({ type: 'foreground', windowId: 'navigate:main', foreground: true, focused: true });
-  return { ...exports.probe, send, timers, holds, maps, errors, tracker, requests, paints: () => paints,
+  return { ...exports.probe, send, messages, timers, holds, maps, errors, tracker, requests, paints: () => paints,
     input: type => send({ type: 'input', windowId: 'navigate:main', focused: true, frameId: 1, event: { type } }),
     tick: () => { for (const callback of timers) callback(); },
     expireFix: () => { for (const callback of timeouts) callback(); timeouts.clear(); },
+    // Fire the timeouts due within this long of being set, leaving later ones pending.
+    elapse: ms => { for (const callback of [...timeouts]) if (callback.delayMs <= ms && timeouts.delete(callback)) callback(); },
+    callTool: (callId, name, args) => send({ type: 'tool-call', callId, name, args }),
+    toolResult: callId => messages.find(message => message.type === 'tool-result' && message.callId === callId)?.result,
     failRoute: () => { routeError = new Error('Route unavailable'); },
     setDistanceUnit: value => { distanceUnit = value; },
     setTimeFormat: value => { timeFormat = value; },
-    fix: latitude => send({ type: 'navigation-sensors', event: { kind: 'location', location: fix(latitude), id: 1 } }),
+    fix: (latitude, accuracyMeters) => send({ type: 'navigation-sensors', event: { kind: 'location', location: fix(latitude, accuracyMeters), id: 1 } }),
     heading: value => compass?.({ command: 15, headingDegrees: value }),
     holdMap: () => { let resolve, reject; delayMap = new Promise((done, fail) => { resolve = done; reject = fail; });
       return { resolve: () => resolve({ pixels: new Uint8Array([0, 128, 255]) }), reject }; },
@@ -204,6 +209,59 @@ test('map requires a fresh fix and releases tracking when GPS times out', async 
   assert.equal(h.state().phase, 'idle');
   assert.equal(h.tracker.running, false);
   assert.equal(h.timers.size, 0);
+});
+
+test('a slow first fix keeps the tracker on, says why, and still starts guidance', async () => {
+  const h = fixture(); const starting = h.startNavigation('Test park', 'walking');
+  h.elapse(h.limits.SLOW_FIX_HINT_MS); await flush();
+  assert.equal(h.state().phase, 'acquiring'); assert.equal(h.tracker.running, true);
+  assert.match(h.state().statusMessage, /Still locating you/);
+  h.fix(37.7); assert.match(await starting, /Navigating to Test park/);
+  assert.equal(h.state().phase, 'navigating'); assert.equal(h.state().statusMessage, '');
+});
+
+test('acquisition gives up and releases the tracker only after the full first-fix wait', async () => {
+  const h = fixture(); const starting = h.startNavigation('Test park', 'walking');
+  h.elapse(h.limits.FIRST_FIX_TIMEOUT_MS - 1); await flush();
+  assert.equal(h.state().phase, 'acquiring'); assert.equal(h.tracker.running, true);
+  h.elapse(h.limits.FIRST_FIX_TIMEOUT_MS);
+  await assert.rejects(starting, /Couldn't find your location/);
+  assert.equal(h.state().phase, 'idle'); assert.equal(h.tracker.running, false);
+  assert.deepEqual(h.requests, []);
+});
+
+test('a coarse fix starts the route but guidance waits for an accurate one', async () => {
+  const h = fixture(); const starting = h.startNavigation('Test park', 'walking');
+  h.fix(37.7, 800); assert.match(await starting, /Navigating to Test park/); await flush();
+  assert.equal(h.state().phase, 'navigating'); assert.equal(h.state().progress, null);
+  h.fix(37.705, 800); assert.equal(h.state().progress, null);
+  h.fix(37.705); assert.ok(h.state().progress.remainingMeters < 600);
+});
+
+test('start_route returns the route summary when the fix is prompt', async () => {
+  const h = fixture();
+  h.callTool(1, 'start_route', { query: 'Test park', profile: 'walking' });
+  h.fix(37.7); await flush();
+  assert.equal(h.toolResult(1).ok, true); assert.match(h.toolResult(1).content, /Navigating to Test park/);
+});
+
+test('start_route answers while the phone is still locating, and guidance starts on the late fix', async () => {
+  const h = fixture();
+  h.callTool(1, 'start_route', { query: 'Test park', profile: 'walking' });
+  h.elapse(h.limits.TOOL_FIX_WAIT_MS - 1); await flush(); assert.equal(h.toolResult(1), undefined);
+  h.elapse(h.limits.TOOL_FIX_WAIT_MS); await flush();
+  assert.equal(h.toolResult(1).ok, true); assert.match(h.toolResult(1).content, /still finding its location/);
+  assert.equal(h.state().phase, 'acquiring'); assert.equal(h.tracker.running, true);
+  h.fix(37.7); await flush();
+  assert.equal(h.state().phase, 'navigating'); assert.deepEqual(h.errors, []);
+});
+
+test('start_route reports a cancelled acquisition at once', async () => {
+  const h = fixture();
+  h.callTool(1, 'start_route', { query: 'Test park', profile: 'walking' });
+  h.send({ type: 'close-window', windowId: 'navigate:main' }); await flush();
+  assert.equal(h.toolResult(1).ok, false); assert.equal(h.toolResult(1).error, 'Navigation cancelled.');
+  assert.equal(h.tracker.running, false);
 });
 
 test('closing map during GPS acquisition cannot reopen it on a late fix', async () => {

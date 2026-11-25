@@ -1,6 +1,7 @@
 /**
- * Continuous GPS updates for navigation, backed by the Java
- * FaceclawLocationTracker. Usable from any isolate; callbacks arrive on the
+ * Continuous location updates for navigation, backed by the Kotlin
+ * FaceclawLocationTracker: GPS fixes, with Wi-Fi/cell fixes standing in while
+ * GPS has none. Usable from any isolate; callbacks arrive on the
  * calling isolate's own thread (the tracker captures the constructing
  * thread's Looper).
  */
@@ -58,7 +59,7 @@ export class LocationTracker {
         this.callbacks.onError(String(message));
       },
     });
-    // The Java tracker retains the listener proxy for the stream's lifetime.
+    // The Kotlin tracker retains the listener proxy for the stream's lifetime.
     this.tracker.setListener(listener);
     this.running = true;
     this.tracker.start(intervalMs);

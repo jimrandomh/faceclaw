@@ -4,6 +4,7 @@
 
 * Improve BLE bandwidth usage, animation framerates and screen-wake times
 * Added animations: Launcher folder opening, settings menu toggles, glanceboard lines
+* Navigate: Fix "Couldn't get a GPS fix" unless another app had just used the phone's GPS. It now starts from the phone's Wi-Fi/cell position and keeps waiting for GPS instead of giving up after 10 seconds (Android)
 
 ## 0.9.1 - 2026-11-21
 

@@ -108,7 +108,29 @@ const IDLE_REFRESH_MS = 5_000;
 const IDLE_REFRESH_MIN_MOVE_M = 10;
 const MAP_RETRY_BACKOFF_MS = 5_000;
 const REROUTE_MIN_INTERVAL_MS = 20_000;
-const FIRST_FIX_TIMEOUT_MS = 10_000;
+/**
+ * How long the tracker stays on waiting for a first fix. A GPS receiver
+ * starting cold has to listen without interruption until it has the
+ * satellites' orbits, which takes the better part of a minute under open sky;
+ * giving up sooner and retrying starts that over, and never gets there.
+ */
+const FIRST_FIX_TIMEOUT_MS = 120_000;
+/** Still without a fix after this long, the status line says what the wait is for. */
+const SLOW_FIX_HINT_MS = 10_000;
+/**
+ * How long start_route waits for a first fix before answering that the phone
+ * is still locating. The rest of the tool's timeoutMs is for the geocoding and
+ * routing calls that follow a fix.
+ */
+const TOOL_FIX_WAIT_MS = 10_000;
+/**
+ * Guidance ignores fixes vaguer than this. One made without GPS, from cell
+ * towers, can sit several hundred meters off the road: following it would
+ * call the wearer off-route and reroute from the wrong place.
+ */
+const GUIDANCE_MAX_ACCURACY_M = 100;
+/** What a start rejects with when it was overtaken by another, or by closing. */
+const CANCELLED_MESSAGE = "Navigation cancelled.";
 const LOCATION_INTERVAL_MS = 1_000;
 /**
  * A fix older than this is not where the user is now. The tracker seeds each
@@ -169,7 +191,7 @@ const NAVIGATE_TOOLS: ToolSpec[] = [
       additionalProperties: false,
     },
     availability: "open",
-    // Under the 15 s host backstop; first GPS fix + two API calls can be slow.
+    // Under the 15 s host backstop; a first fix (TOOL_FIX_WAIT_MS) + two API calls can be slow.
     timeoutMs: 14_000,
   },
   {
@@ -263,7 +285,9 @@ let unsubscribeCompass: (() => void) | null = null;
 let headHeadingDeg: number | null = null;
 
 let tickTimer: ReturnType<typeof setInterval> | null = null;
-let firstFixWaiters: Array<(fix: TrackedLocation) => void> = [];
+/** A caller of waitForFix; settling one also clears its timers. */
+type FixWaiter = { resolve: (fix: TrackedLocation) => void; reject: (error: Error) => void };
+let firstFixWaiters: FixWaiter[] = [];
 
 const tracker = new LocationTracker({
   onLocation: (fix) => handleFix(fix),
@@ -473,7 +497,7 @@ async function startNavigationTo(target: NavTarget, requestedProfile: RouteProfi
     throw new Error(statusMessage);
   }
   const generation = ++navigationGeneration;
-  const checkCurrent = () => { if (generation !== navigationGeneration) throw new Error("Navigation cancelled."); };
+  const checkCurrent = () => { if (generation !== navigationGeneration) throw new Error(CANCELLED_MESSAGE); };
   const hadActiveRoute = phase === "navigating" && follower !== null;
   const hadActiveMap = phase === "map";
   const previous = {
@@ -597,7 +621,7 @@ function handleFix(fix: TrackedLocation): void {
   if (fix.bearingDeg !== null && (fix.speedMps ?? 0) >= BEARING_MIN_SPEED_MPS) {
     lastBearingDeg = fix.bearingDeg;
   }
-  for (const waiter of firstFixWaiters.splice(0)) waiter(fix);
+  for (const waiter of firstFixWaiters.splice(0)) waiter.resolve(fix);
 
   if (phase === "map") {
     statusMessage = "";
@@ -606,6 +630,7 @@ function handleFix(fix: TrackedLocation): void {
     return;
   }
   if (phase !== "navigating" || !follower) return;
+  if (fix.accuracyMeters !== null && fix.accuracyMeters > GUIDANCE_MAX_ACCURACY_M) return;
   progress = follower.update(fix.longitude, fix.latitude);
 
   if (progress.arrived) {
@@ -650,24 +675,45 @@ function ensureTracking(): void {
 function stopTrackingIfIdle(): void {
   if (phase === "idle" || phase === "arrived") {
     tracker.stop();
-    firstFixWaiters = [];
+    for (const waiter of firstFixWaiters.splice(0)) waiter.reject(new Error(CANCELLED_MESSAGE));
   }
 }
 
+/**
+ * The phone's current position: the last fix if it is still fresh, otherwise
+ * the next one. The tracker must already be running (ensureTracking), and
+ * stays on for the whole wait.
+ */
 function waitForFix(): Promise<TrackedLocation> {
   if (lastFix && isFreshFix(lastFix)) {
     return Promise.resolve(lastFix);
   }
   return new Promise<TrackedLocation>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      firstFixWaiters = firstFixWaiters.filter((waiter) => waiter !== onFix);
-      reject(new Error("Couldn't get a GPS fix yet; try again in a moment."));
+    const generation = navigationGeneration;
+    const hintTimer = setTimeout(() => {
+      if (generation !== navigationGeneration || phase !== "acquiring") return;
+      statusMessage = "Still locating you. GPS can take a minute, and needs a view of the sky.";
+      render();
+    }, SLOW_FIX_HINT_MS);
+    const timeoutTimer = setTimeout(() => {
+      waiter.reject(new Error("Couldn't find your location. Try again somewhere with a view of the sky."));
     }, FIRST_FIX_TIMEOUT_MS);
-    const onFix = (fix: TrackedLocation) => {
-      clearTimeout(timer);
-      resolve(fix);
+    const settle = () => {
+      clearTimeout(hintTimer);
+      clearTimeout(timeoutTimer);
+      firstFixWaiters = firstFixWaiters.filter((entry) => entry !== waiter);
     };
-    firstFixWaiters.push(onFix);
+    const waiter: FixWaiter = {
+      resolve: (fix) => {
+        settle();
+        resolve(fix);
+      },
+      reject: (error) => {
+        settle();
+        reject(error);
+      },
+    };
+    firstFixWaiters.push(waiter);
   });
 }
 
@@ -906,12 +952,7 @@ async function handleNavigateTool(name: string, args: any): Promise<ToolResult> 
       const requested = String(args?.profile ?? "driving");
       const routeProfile: RouteProfile =
         requested === "walking" || requested === "cycling" ? requested : "driving";
-      try {
-        const summary = await startNavigation(query, routeProfile);
-        return { ok: true, content: summary };
-      } catch (error) {
-        return { ok: false, error: String((error as Error)?.message ?? error) };
-      }
+      return startRouteForTool(query, routeProfile);
     }
     case "stop_route":
       if (phase === "idle") return { ok: true, content: "Navigation was not active." };
@@ -922,6 +963,39 @@ async function handleNavigateTool(name: string, args: any): Promise<ToolResult> 
       return { ok: true, content: describeRouteStatus() };
     default:
       return { ok: false, error: `Unknown navigate tool: ${name}` };
+  }
+}
+
+/**
+ * start_route's answer. Locating the phone can outlast the tool's time budget
+ * (see FIRST_FIX_TIMEOUT_MS) and carries on regardless, so past
+ * TOOL_FIX_WAIT_MS the answer says that, rather than the call timing out as
+ * though navigation had failed.
+ */
+async function startRouteForTool(query: string, routeProfile: RouteProfile): Promise<ToolResult> {
+  const starting = startNavigation(query, routeProfile);
+  const generation = navigationGeneration;
+  let waitTimer: ReturnType<typeof setTimeout> | null = null;
+  const waitedLongEnough = new Promise<null>((resolve) => {
+    waitTimer = setTimeout(() => resolve(null), TOOL_FIX_WAIT_MS);
+  });
+  try {
+    const summary = await Promise.race([starting, waitedLongEnough]);
+    if (summary !== null) return { ok: true, content: summary };
+    if (generation === navigationGeneration && phase === "acquiring") {
+      starting.catch(() => {});
+      return {
+        ok: true,
+        content:
+          `The phone is still finding its location, which can take a minute. ` +
+          `Navigation to "${query}" will start on the glasses by itself once it has a fix.`,
+      };
+    }
+    return { ok: true, content: await starting };
+  } catch (error) {
+    return { ok: false, error: String((error as Error)?.message ?? error) };
+  } finally {
+    if (waitTimer !== null) clearTimeout(waitTimer);
   }
 }
 

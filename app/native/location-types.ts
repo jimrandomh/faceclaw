@@ -17,12 +17,16 @@ export type Place = {
 export type TrackedLocation = {
   latitude: number;
   longitude: number;
-  /** Meters, or null when the fix doesn't report accuracy. */
+  /**
+   * Meters, or null when the fix doesn't report accuracy. A fix made without
+   * GPS (from Wi-Fi or cell towers) can be hundreds of meters out.
+   */
   accuracyMeters: number | null;
   /** Degrees clockwise from true north, or null (common when stationary). */
   bearingDeg: number | null;
   /** Meters per second, or null. */
   speedMps: number | null;
+  /** When the fix was taken, by the phone's clock (comparable with Date.now()). */
   timestampMs: number;
 };
 
