@@ -5,6 +5,12 @@ class MessageBuilder {
         private const val ACK_TIMEOUT_MS: Int = 3_500
 
         private const val HEARTBEAT_TIMEOUT_MS: Int = 1_500
+
+        /** The stock EvenHub mic enable/disable. */
+        const val AUDIO_CONTROL_KIND = "audio-control"
+
+        /** A CFW mic_control record (settings field 103). */
+        const val MIC_CONTROL_KIND = "mic-control"
     }
 
     private var magicPool: BleMagicPool
@@ -131,7 +137,7 @@ class MessageBuilder {
     fun enableOrDisableMic(enable: Boolean): OutboundMessage {
         var magic: Int = magicPool.allocate()
         return OutboundMessage(
-            "audio-control",
+            AUDIO_CONTROL_KIND,
             (if (enable) "G2 mic enable" else "G2 mic disable"),
             BleProtocol.SID_EVENHUB,
             BleProtocol.FLAG_REQUEST,
@@ -311,7 +317,7 @@ class MessageBuilder {
     /** CFW mic_control write (settings field 103) targeted at one temple. */
     fun faceclawMicControl(record: ByteArray, label: String, leftArm: Boolean): OutboundMessage {
         return OutboundMessage(
-            "mic-control",
+            MIC_CONTROL_KIND,
             (("mic control " + label) + (if (leftArm) " L" else " R")),
             BleProtocol.SID_UI_SETTING,
             BleProtocol.FLAG_REQUEST,

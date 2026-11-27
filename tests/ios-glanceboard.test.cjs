@@ -7,8 +7,11 @@ const ts = require('typescript');
 const images = require('../.test-build/app/graphics/image.js');
 const events = require('../.test-build/app/g2/events.js');
 
+// The real restart backoff: it has no dependencies, and what is under test constructs it.
+const captureRestart = require('./helpers/load-typescript.cjs').loader()('app/native/capture-restart.ts');
 function load(file, modules, globals = {}) {
   const context = { exports: {}, require: id => {
+    if (id.endsWith('/capture-restart')) return captureRestart;
     if (!(id in modules)) throw new Error(`Unstubbed import: ${id}`);
     return modules[id];
   }, ...globals };

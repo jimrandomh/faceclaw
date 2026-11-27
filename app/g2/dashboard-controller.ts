@@ -420,6 +420,11 @@ class DashboardController {
       playBuzzerSequence: (payload: Uint8Array) => this.playBuzzerSequence(payload),
     };
     this.sharedActions = sharedActions;
+    // A held capture that ended by itself starts again with what a new
+    // capture would get now (see FaceclawVoiceControlBridge.handleCaptureDied).
+    voiceControlBridge.setRestartOptions(() =>
+      this.canCaptureVoice() ? this.voiceCaptureOptions(this.communicator) : null,
+    );
     // The always-available assistant tools (calendar, media, notifications,
     // glasses state) register once at startup, independent of any connection.
     registerSystemTools();
@@ -2169,8 +2174,8 @@ class DashboardController {
    */
   private pttCaptureGeneration = 0;
 
-  private startVoiceCapture(endpointing = false): Promise<void> {
-    return this.beginVoiceCapture("ptt", endpointing);
+  private async startVoiceCapture(endpointing = false): Promise<void> {
+    await this.beginVoiceCapture("ptt", endpointing);
   }
 
   private stopVoiceCapture(): Promise<void> | void {
@@ -2217,9 +2222,27 @@ class DashboardController {
    */
   private ensureContinuousCapture(force = false): void {
     if (this.continuousClients.size === 0 || voiceControlBridge.holdsCapture("continuous")) return;
+    // Nothing to capture from yet (still connecting, or charging): this is
+    // not an attempt, so the session's first frame makes one.
+    if (!this.canCaptureVoice()) return;
     if (!force && this.continuousAttemptedOn === this.communicator) return;
-    this.continuousAttemptedOn = this.communicator;
-    void this.beginVoiceCapture("continuous").finally(() => this.syncContinuousClaim());
+    const attemptedOn = this.communicator;
+    this.continuousAttemptedOn = attemptedOn;
+    void this.beginVoiceCapture("continuous")
+      .then((outcome) => {
+        // The connection changed under the permission check: not an attempt either.
+        if (outcome === "skipped" && this.continuousAttemptedOn === attemptedOn) this.continuousAttemptedOn = undefined;
+      })
+      .finally(() => this.syncContinuousClaim());
+  }
+
+  /**
+   * Whether a capture can start now: preview mode captures from the phone mic
+   * (voiceCaptureOptions with a null communicator); otherwise a live glasses
+   * session must be the source.
+   */
+  private canCaptureVoice(): boolean {
+    return this.isPreviewDisplayActive() || (this.phase === "connected" && this.communicator !== null);
   }
 
   /**
@@ -2368,42 +2391,51 @@ class DashboardController {
     return granted;
   }
 
-  private async beginVoiceCapture(kind: "ptt" | "continuous", endpointing = false): Promise<void> {
+  /**
+   * Resolves to "started" once the capture was asked of the bridge, "skipped"
+   * when there was nothing to capture from or the request was overtaken while
+   * permission was pending, and "failed" when permission was refused or the
+   * start threw.
+   */
+  private async beginVoiceCapture(
+    kind: "ptt" | "continuous",
+    endpointing = false,
+  ): Promise<"started" | "skipped" | "failed"> {
     const pttGeneration = kind === "ptt" ? ++this.pttCaptureGeneration : 0;
-    // Preview mode captures from the phone mic (voiceCaptureOptions with a
-    // null communicator); otherwise a live glasses session must be the source.
     const previewCapture = this.isPreviewDisplayActive();
-    if (!previewCapture && (this.phase !== "connected" || !this.communicator)) {
-      return;
+    if (!this.canCaptureVoice()) {
+      return "skipped";
     }
     const communicator = this.communicator;
     // The system prompt appears on the phone; tell the glasses dialog so it
     // sends the user there rather than claiming to listen.
     if (!hasMicrophonePermission()) voiceControlBridge.reportPermissionPrompt();
-    await ensureVoicePermissions()
-      .then(() => {
-        if (kind === "ptt" && pttGeneration !== this.pttCaptureGeneration) return;
+    return ensureVoicePermissions()
+      .then((): "started" | "skipped" => {
+        if (kind === "ptt" && pttGeneration !== this.pttCaptureGeneration) return "skipped";
         if (previewCapture) {
-          if (!this.isPreviewDisplayActive()) return;
+          if (!this.isPreviewDisplayActive()) return "skipped";
         } else if (this.phase !== "connected" || this.communicator !== communicator) {
-          return;
+          return "skipped";
         }
         const options = { ...this.voiceCaptureOptions(communicator), endpointing };
         if (kind === "ptt") {
           voiceControlBridge.startPushToTalk(options);
         } else {
           // Every window may have let go while permission was pending.
-          if (this.continuousClients.size === 0) return;
+          if (this.continuousClients.size === 0) return "skipped";
           // Claimed before the capture starts so the Microphones app and
           // EvenHub mic apps stand down first, as they do for the voice dialog.
           voiceActivity.setActive(true, CONTINUOUS_CAPTURE_HOLDER);
           voiceControlBridge.startContinuousCapture(options);
         }
+        return "started";
       })
-      .catch((error) => {
+      .catch((error): "failed" => {
         this.appendLog(`voice permission failed: ${this.formatError(error)}`);
         if (!hasMicrophonePermission()) voiceControlBridge.reportPermissionDenied();
         else voiceControlBridge.reportStartFailed(this.formatError(error));
+        return "failed";
       });
   }
 

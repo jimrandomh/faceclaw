@@ -114,6 +114,20 @@ class VoiceCaptureSession(
         const val ARRAY_TEMPLE_SILENT_MS = 5000L
         const val ARRAY_WAITING_MS = 2000L
         const val ARRAY_WAITING_STATUS = "Waiting for the glasses microphones..."
+        // Temples that have streamed nothing this long after arming aren't going to (the
+        // firmware armed but cannot send, or isn't the one that streams them): the capture
+        // goes on with the mixed stream. Longer than ARRAY_TEMPLE_SILENT_MS, so each temple
+        // has been configured a second time first.
+        const val ARRAY_FALLBACK_MS = 8000L
+        // The mixed stream sends a packet every EXPECTED_PACKET_INTERVAL_MS while its enable
+        // holds, speech or not. This long without one means the glasses dropped it.
+        const val G2_SILENT_MS = 5000L
+        const val G2_LOST_STATUS = "Waiting for the glasses microphone..."
+        /** How long stop() waits for the worker; it winds down on its own thread either way. */
+        const val STOP_WAIT_MS = 1500L
+        // How long a new capture's worker waits for the previous one to finish with the
+        // session's state (its final decode, speaker verification, the mic disable).
+        const val PREVIOUS_WORKER_WAIT_MS = 15_000L
         // A replay skips stretches of the recording with no audio longer than this
         // (a recording made across a disconnect) instead of sitting through them.
         const val REPLAY_MAX_GAP_MS = 2000L
@@ -151,6 +165,18 @@ class VoiceCaptureSession(
         val arm: String = arm ?: "?"
     }
 
+    /** What one start() asked for, latched for its worker: later setters and starts don't change it. */
+    private class CapturePlan(
+        /** The session generation this capture is; see [active]. */
+        val worker: Int,
+        val captureId: Int,
+        val mode: Mode,
+        val source: Source,
+        val configure: ByteArray?,
+        val replayPath: String?,
+        val replayStartMs: Long,
+    )
+
     private val lock = platform.createLock()
     private val audioQueue = DroppingPacketQueue<AudioPacket>(MAX_AUDIO_QUEUE_PACKETS, platform)
     @Volatile
@@ -160,7 +186,12 @@ class VoiceCaptureSession(
     // Set once the worker has the mic enabled for this session. Read and
     // written under `lock`, so it flips with `started` atomically.
     private var audioStarted = false
+    // The newest worker's latch, until that worker has finished.
     private var workerFinished: Latch? = null
+    // Bumped by every start(): a worker runs while `started` holds and this is still its
+    // own, so one that outlived its stop() can't mistake the next capture for its own.
+    @Volatile
+    private var generation = 0
     @Volatile
     private var workerThreadName: String? = null
     // Capture from the phone's own microphone instead of the G2 over BLE
@@ -176,10 +207,9 @@ class VoiceCaptureSession(
     private var replayPath: String? = null
     @Volatile
     private var replayStartMs = 0L
+    // What the running capture reads from, for isCapturing and the recorder. A capture that
+    // falls back from the temples' microphones to the mixed stream changes it.
     private var activeSource = Source.G2
-    private var activeConfigure: ByteArray? = null
-    private var activeReplayPath: String? = null
-    private var activeReplayStartMs = 0L
     // Replay controls, picked up by the worker between chunks.
     @Volatile
     private var replaySeekMs = -1L
@@ -363,18 +393,21 @@ class VoiceCaptureSession(
             }
             mode = parseMode(requestedMode)
             activeSource = source
-            activeConfigure = configure
-            activeReplayPath = path
-            activeReplayStartMs = replayStartMs
             replaySeekMs = -1L
             replayPaused = false
             started = true
             audioStarted = false
+            // A worker still winding down from the last capture, if any.
+            val previous = workerFinished
             val finished = Latch(1, platform)
             workerFinished = finished
-            startThread(threadName, true) { runLoop(captureId, finished) }
+            val plan = CapturePlan(++generation, captureId, mode, source, configure, path, replayStartMs)
+            startThread(threadName, true) { runLoop(plan, finished, previous) }
         }
     }
+
+    /** Whether the capture [worker] was started for is still wanted. */
+    private fun active(worker: Int): Boolean = started && generation == worker
 
     /**
      * Whether mic audio is actually flowing. start() only records intent: the
@@ -406,9 +439,12 @@ class VoiceCaptureSession(
     }
 
     /**
-     * Stops the session and waits up to 1.5 s for the worker to finish unless
+     * Stops the session and waits up to STOP_WAIT_MS for the worker to finish unless
      * called from the worker itself. The worker checks the stop flag between
-     * packets (every packet or 250 ms wait) and between phone-mic reads (50 ms).
+     * packets (every packet or 250 ms wait) and between phone-mic reads (50 ms),
+     * then releases what it holds on the glasses from its own thread: the mic
+     * disable waits on a Bluetooth acknowledgement, which the caller (the UI
+     * thread) must not sit through.
      */
     fun stop() {
         var finished: Latch? = null
@@ -421,10 +457,9 @@ class VoiceCaptureSession(
             finished = workerFinished
             workerName = workerThreadName
         }
-        stopSource()
         audioQueue.wake()
         if (finished != null && (workerName == null || currentThreadName() != workerName)) {
-            finished.await(1500)
+            finished.await(STOP_WAIT_MS)
         }
     }
 
@@ -439,11 +474,48 @@ class VoiceCaptureSession(
         return Mode.ONBOARD
     }
 
-    private fun runLoop(captureId: Int, finished: Latch) {
+    private fun runLoop(plan: CapturePlan, finished: Latch, previous: Latch?) {
+        val worker = plan.worker
         workerThreadName = currentThreadName()
+        // What this worker has running on the glasses. Ended as soon as the capture loop
+        // returns (before the final decode), and again on the way out in case it threw.
+        var release: (() -> Unit)? = null
+        fun releaseSource() {
+            val current = release ?: return
+            release = null
+            current()
+            maybeEmitAudioStats(true)
+        }
+        // What this worker put in the session's recognizer and decoder slots.
+        var ownRecognizer: OfflineTranscriber? = null
+        var ownDecoder: AudioPacketDecoder? = null
+        fun markAudioStarted() = lock.withLock { if (generation == worker) audioStarted = true }
+        fun captureG2(listening: String): Boolean {
+            val source = host.g2AudioSource()
+            val decoder = host.createPacketDecoder()
+            ownDecoder = decoder
+            packetDecoder = decoder
+            if (source == null || !startG2Audio(source)) {
+                emitStatus("Could not start G2 microphone input.")
+                return false
+            }
+            release = { source.stop() }
+            markAudioStarted()
+            if (active(worker)) emitStatus(listening)
+            processG2Audio(source, worker)
+            return true
+        }
         try {
+            // The last capture's worker may still be on its final decode, speaker
+            // verification or mic disable. It uses this session's buffers, so it goes first.
+            if (previous != null && !previous.await(PREVIOUS_WORKER_WAIT_MS)) {
+                logWarn("the previous capture's worker is still running after $PREVIOUS_WORKER_WAIT_MS ms; starting beside it")
+            }
+            if (!active(worker)) {
+                return
+            }
             host.onSessionStarting()
-            val currentMode = mode
+            val currentMode = plan.mode
             val currentOnboardKind = onboardModelKind
             if (currentMode == Mode.ONBOARD) {
                 if (!host.hasTranscriberModel(currentOnboardKind)) {
@@ -451,7 +523,9 @@ class VoiceCaptureSession(
                     return
                 }
                 emitStatus("Loading transcription model...")
-                recognizer = host.loadTranscriber(currentOnboardKind)
+                val transcriber = host.loadTranscriber(currentOnboardKind)
+                ownRecognizer = transcriber
+                recognizer = transcriber
                 resetTranscriptState()
                 lastTranscript = ""
             }
@@ -463,60 +537,72 @@ class VoiceCaptureSession(
             mixer.reset()
             lastMissingPackets = 0
             val listening = if (currentMode == Mode.CLOUD) "Listening (cloud)..." else "Listening..."
-            when (activeSource) {
-                Source.PHONE -> {
-                    val record = host.openPhoneMic()
-                    if (record == null) {
-                        emitStatus("Could not start the phone microphone.")
-                        return
-                    }
-                    lock.withLock { audioStarted = true }
-                    emitStatus(listening)
-                    try {
-                        processPhoneAudio(record)
-                    } finally {
-                        record.close()
-                    }
-                }
-                Source.REPLAY -> {
-                    val reader = try {
-                        MicRecordingReader(host.openRecording(activeReplayPath!!))
-                    } catch (error: Throwable) {
-                        emitStatus("Could not open the recording: " + error.message)
-                        emitReplay("error", 0, 0)
-                        return
-                    }
-                    try {
-                        lock.withLock { audioStarted = true }
-                        logInfo("replaying " + reader.description + ", " + formatFixed(reader.durationMs / 1000.0, 1) + " s")
+            // A stop while the model loaded: the mic isn't brought up just to be taken down.
+            if (active(worker)) {
+                when (plan.source) {
+                    Source.PHONE -> {
+                        val record = host.openPhoneMic()
+                        if (record == null) {
+                            emitStatus("Could not start the phone microphone.")
+                            return
+                        }
+                        markAudioStarted()
                         emitStatus(listening)
-                        processReplay(reader)
-                    } finally {
-                        reader.close()
+                        try {
+                            // What it heard before failing is still transcribed below.
+                            if (!processPhoneAudio(record, worker)) emitStatus("The phone microphone stopped.")
+                        } finally {
+                            record.close()
+                        }
                     }
-                }
-                Source.ARRAY -> {
-                    val link = host.micArrayLink()
-                    val configure = activeConfigure
-                    if (link == null || configure == null || !startArray(link, configure)) {
-                        emitStatus("Could not start the glasses microphone array.")
+                    Source.REPLAY -> {
+                        val reader = try {
+                            MicRecordingReader(host.openRecording(plan.replayPath!!))
+                        } catch (error: Throwable) {
+                            emitStatus("Could not open the recording: " + error.message)
+                            emitReplay("error", 0, 0)
+                            return
+                        }
+                        try {
+                            markAudioStarted()
+                            logInfo("replaying " + reader.description + ", " + formatFixed(reader.durationMs / 1000.0, 1) + " s")
+                            emitStatus(listening)
+                            processReplay(reader, plan)
+                        } finally {
+                            reader.close()
+                        }
+                    }
+                    Source.ARRAY -> {
+                        val link = host.micArrayLink()
+                        val configure = plan.configure
+                        if (link == null || configure == null || !startArray(link, configure)) {
+                            emitStatus("Could not start the glasses microphone array.")
+                            return
+                        }
+                        release = { stopArray(link) }
+                        markAudioStarted()
+                        if (active(worker)) emitStatus(listening)
+                        if (!processArray(link, configure, listening, worker) && active(worker)) {
+                            logWarn("mic array streamed nothing in $ARRAY_FALLBACK_MS ms; capturing the mixed stream instead")
+                            releaseSource()
+                            lock.withLock {
+                                if (generation == worker) {
+                                    activeSource = Source.G2
+                                    audioStarted = false
+                                }
+                            }
+                            if (!captureG2(listening)) {
+                                return
+                            }
+                        }
+                    }
+                    Source.G2 -> if (!captureG2(listening)) {
                         return
                     }
-                    lock.withLock { audioStarted = true }
-                    emitStatus(listening)
-                    processArray(link, configure, listening)
-                }
-                Source.G2 -> {
-                    packetDecoder = host.createPacketDecoder()
-                    if (!startG2Audio()) {
-                        emitStatus("Could not start G2 microphone input.")
-                        return
-                    }
-                    lock.withLock { audioStarted = true }
-                    emitStatus(listening)
-                    processG2Audio()
                 }
             }
+            // The mic goes off now, not after the decodes below.
+            releaseSource()
             // Verification result must precede the final transcript so the
             // TS bridge can suppress a non-wearer command before it is acted
             // on (the callbacks are posted in order to the dispatcher).
@@ -530,40 +616,65 @@ class VoiceCaptureSession(
             logError("Voice control failed", error)
             emitStatus("Voice control failed: " + error.message)
         } finally {
-            stopSource()
-            releaseRecognizer()
-            releaseDecoder()
-            lock.withLock {
-                started = false
-                audioStarted = false
-                workerFinished = null
-                workerThreadName = null
+            try {
+                releaseSource()
+            } catch (error: Throwable) {
+                logError("Voice source release failed", error)
             }
-            emitStopped(captureId)
+            // Only what this worker made: a newer capture that gave up waiting for this one
+            // has its own in the session's slots.
+            ownRecognizer?.release()
+            if (recognizer === ownRecognizer) recognizer = null
+            ownDecoder?.close()
+            if (packetDecoder === ownDecoder) packetDecoder = null
+            lock.withLock {
+                // A capture started since then owns the session's state now.
+                if (workerFinished === finished) {
+                    started = false
+                    audioStarted = false
+                    workerFinished = null
+                    workerThreadName = null
+                }
+            }
+            emitStopped(plan.captureId)
             finished.countDown()
         }
     }
 
-    private fun startG2Audio(): Boolean {
-        val source = host.g2AudioSource() ?: return false
-        resetAudioStats()
-        audioQueue.clear()
-        return source.start(object : FaceclawAudioPacketListener {
-            override fun onAudioPacket(data: ByteArray?, arm: String?, arrivalMs: Long) {
-                queueAudioPacket(data, arm, arrivalMs)
-            }
-        })
+    private fun packetListener() = object : FaceclawAudioPacketListener {
+        override fun onAudioPacket(data: ByteArray?, arm: String?, arrivalMs: Long) {
+            queueAudioPacket(data, arm, arrivalMs)
+        }
     }
 
-    private fun processG2Audio() {
+    private fun startG2Audio(source: PacketAudioSource): Boolean {
+        resetAudioStats()
+        audioQueue.clear()
+        return source.start(packetListener())
+    }
+
+    private fun processG2Audio(source: PacketAudioSource, worker: Int) {
         var pcm = ShortArray(PACKET_SAMPLES)
-        while (started) {
+        var packetAt = platform.elapsedRealtimeMs()
+        while (active(worker)) {
             val currentDecoder = packetDecoder ?: return
             if (pcm.size < currentDecoder.maxSamplesPerPacket) pcm = ShortArray(currentDecoder.maxSamplesPerPacket)
-            val packet = takeAudioPacket()
+            val packet = takeAudioPacket(worker)
             if (packet == null) {
+                // The enable lives in the glasses' EvenHub page, so a page that ended by
+                // itself (or glasses that stopped streaming) leaves this loop waiting for
+                // packets that will not come. End the capture: whoever holds it starts again.
+                val lost = if (!source.isActive()) "the glasses session no longer has the mic enabled"
+                    else if (source.streamsContinuously && platform.elapsedRealtimeMs() - packetAt >= G2_SILENT_MS) "no audio for $G2_SILENT_MS ms"
+                    else null
+                if (lost != null && active(worker)) {
+                    logWarn("G2 microphone lost: $lost")
+                    emitStatus(G2_LOST_STATUS)
+                    return
+                }
                 continue
             }
+            packetAt = platform.elapsedRealtimeMs()
             val count = currentDecoder.decodePacket(packet.data, pcm)
             if (count <= 0) {
                 maybeEmitAudioStats(false)
@@ -628,32 +739,33 @@ class VoiceCaptureSession(
     private fun startArray(link: MicArrayLink, configure: ByteArray): Boolean {
         resetAudioStats()
         audioQueue.clear()
-        if (!startArrayForwarding(link)) return false
+        if (!link.startForwarding(packetListener())) return false
         return link.sendControl(configure, "configure", true, true)
     }
 
-    private fun startArrayForwarding(link: MicArrayLink): Boolean =
-        link.startForwarding(object : FaceclawAudioPacketListener {
-            override fun onAudioPacket(data: ByteArray?, arm: String?, arrivalMs: Long) {
-                queueAudioPacket(data, arm, arrivalMs)
-            }
-        })
+    private fun stopArray(link: MicArrayLink) {
+        link.sendControl(MicArrayProtocol.control(MicArrayProtocol.OP_STOP), "stop", true, true)
+        link.stopForwarding()
+    }
 
     /**
      * Mic array capture loop: each temple's 'SM' frames become chunks of that temple's stream.
      * Between frames it keeps the streams alive: renews the temples' lease, configures a temple
      * again when it has gone quiet, and takes forwarding back when the glasses session dropped it.
+     * Returns false when neither temple streamed anything in ARRAY_FALLBACK_MS, for the caller
+     * to capture the mixed stream instead.
      */
-    private fun processArray(link: MicArrayLink, configure: ByteArray, listening: String) {
+    private fun processArray(link: MicArrayLink, configure: ByteArray, listening: String, worker: Int): Boolean {
         val startedAt = platform.elapsedRealtimeMs()
         var checkedAt = startedAt
         var renewedAt = startedAt
         // Left, right.
         val armedAt = longArrayOf(startedAt, startedAt)
         val frameAt = longArrayOf(startedAt, startedAt)
+        var streamed = false
         var waiting = false
-        while (started) {
-            val packet = takeAudioPacket()
+        while (active(worker)) {
+            val packet = takeAudioPacket(worker)
             val now = platform.elapsedRealtimeMs()
             if (packet != null) {
                 val side = if (packet.arm == "L") 0 else if (packet.arm == "R") 1 else -1
@@ -661,6 +773,7 @@ class VoiceCaptureSession(
                 val pcm = if (frame != null) MicArrayProtocol.pcm16(packet.data, frame) else null
                 // Anything else is a stock-format packet from before arming took effect.
                 if (frame != null && pcm != null) {
+                    streamed = true
                     frameAt[side] = now
                     val frames = pcm.size / frame.channels
                     decodedSamples += frames.toLong()
@@ -675,10 +788,13 @@ class VoiceCaptureSession(
                     handleArrayChunk(chunk)
                 }
             }
+            if (!streamed && now - startedAt >= ARRAY_FALLBACK_MS) {
+                return false
+            }
             if (now - checkedAt >= ARRAY_CHECK_MS) {
                 checkedAt = now
                 if (!link.isForwarding()) {
-                    if (host.isG2SessionReady() && startArrayForwarding(link) && link.sendControl(configure, "configure", true, true)) {
+                    if (host.isG2SessionReady() && link.startForwarding(packetListener()) && link.sendControl(configure, "configure", true, true)) {
                         logInfo("mic array forwarding re-established")
                         armedAt.fill(now)
                         renewedAt = now
@@ -703,6 +819,7 @@ class VoiceCaptureSession(
             }
             maybeEmitAudioStats(false)
         }
+        return true
     }
 
     /**
@@ -710,9 +827,10 @@ class VoiceCaptureSession(
      * so recognition (its partials, a cloud provider's stream) sees what a live capture would.
      * Jumps and pauses asked for from outside take effect between chunks.
      */
-    private fun processReplay(reader: MicRecordingReader) {
+    private fun processReplay(reader: MicRecordingReader, plan: CapturePlan) {
+        val worker = plan.worker
         val duration = reader.durationMs
-        var position = minOf(activeReplayStartMs, duration)
+        var position = minOf(plan.replayStartMs, duration)
         reader.seekTo(position)
         emitReplay("start", position, duration)
         var reportedAt = position
@@ -720,7 +838,7 @@ class VoiceCaptureSession(
         var anchorWall = -1L
         var anchorFile = 0L
         var pending: MicChunk? = null
-        while (started) {
+        while (active(worker)) {
             val seek = replaySeekMs
             if (seek >= 0) {
                 replaySeekMs = -1L
@@ -810,15 +928,16 @@ class VoiceCaptureSession(
     /**
      * Phone-mic capture loop: no LC3 decode, no arm bookkeeping, no frame
      * metadata. The blocking read returns every chunk (50 ms), which bounds how
-     * long a stop() waits for the loop to notice `started` dropped.
+     * long a stop() waits for the loop to notice `started` dropped. Returns false
+     * when the microphone failed under it.
      */
-    private fun processPhoneAudio(record: PcmAudioSource) {
+    private fun processPhoneAudio(record: PcmAudioSource, worker: Int): Boolean {
         val pcm = ShortArray(SAMPLE_RATE / 20)
-        while (started) {
+        while (active(worker)) {
             val read = record.read(pcm)
             if (read < 0) {
                 logWarn("phone mic read failed: $read")
-                return
+                return false
             }
             if (read == 0) {
                 continue
@@ -826,6 +945,7 @@ class VoiceCaptureSession(
             decodedSamples += read.toLong()
             handleMonoChunk(MicChunk(MicStream.MONO, 1, SAMPLE_RATE, pcm, read, platform.elapsedRealtimeMs()))
         }
+        return true
     }
 
     private fun processRecognizer(samples: FloatArray) {
@@ -1025,34 +1145,6 @@ class VoiceCaptureSession(
         host.dispatcher.post { currentListener.onStopped(captureId) }
     }
 
-    /**
-     * Release what the running capture's source holds on the glasses. Runs on stop() and again
-     * as the worker winds down (it may have started the source after stop() looked), so
-     * everything here is safe to repeat.
-     */
-    private fun stopSource() {
-        val source = lock.withLock { activeSource }
-        when (source) {
-            Source.G2 -> host.g2AudioSource()?.stop()
-            Source.ARRAY -> host.micArrayLink()?.let { link ->
-                link.sendControl(MicArrayProtocol.control(MicArrayProtocol.OP_STOP), "stop", true, true)
-                link.stopForwarding()
-            }
-            Source.PHONE, Source.REPLAY -> {}
-        }
-        maybeEmitAudioStats(true)
-    }
-
-    private fun releaseRecognizer() {
-        recognizer?.release()
-        recognizer = null
-    }
-
-    private fun releaseDecoder() {
-        packetDecoder?.close()
-        packetDecoder = null
-    }
-
     /** Called from the BLE notification thread for every glasses mic packet. */
     fun queueAudioPacket(data: ByteArray?, arm: String?, arrivalMs: Long) {
         if (!started || data == null) {
@@ -1076,8 +1168,8 @@ class VoiceCaptureSession(
         }
     }
 
-    private fun takeAudioPacket(): AudioPacket? {
-        val packet = audioQueue.take(250) { started }
+    private fun takeAudioPacket(worker: Int): AudioPacket? {
+        val packet = audioQueue.take(250) { active(worker) }
         if (packet == null) {
             maybeEmitAudioStats(false)
         }

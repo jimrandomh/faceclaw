@@ -1,5 +1,6 @@
 package com.faceclaw.app
 
+import kotlin.concurrent.Volatile
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -61,18 +62,31 @@ class VoiceCaptureSessionTest {
         var hasModel: Boolean = true,
         var embedding: FloatArray? = null,
         var g2Ready: Boolean = false,
+        /** The glasses stream steadily while the mic is on, as a G2's mixed stream does. */
+        var continuous: Boolean = false,
+        var arrayLink: MicArrayLink? = null,
     ) : VoiceCaptureHost {
         override val dispatcher = CallbackDispatcher { it() }
-        var packetListener: FaceclawAudioPacketListener? = null
-        var g2Stops = 0
+        @Volatile var packetListener: FaceclawAudioPacketListener? = null
+        @Volatile var g2Starts = 0
+        @Volatile var g2Stops = 0
+        /** The glasses session still has the mic enabled. */
+        @Volatile var enableHolds = true
+        /** How long each mic disable takes, like a slow Bluetooth acknowledgement. */
+        @Volatile var stopDelayMs = 0L
         override fun onSessionStarting() {}
         override fun isG2SessionReady(): Boolean = g2Ready
-        override fun isG2AudioCaptureActive(): Boolean = packetListener != null
+        override fun isG2AudioCaptureActive(): Boolean = packetListener != null && enableHolds
         override fun g2AudioSource(): PacketAudioSource? = if (!g2Ready) null else object : PacketAudioSource {
-            override fun start(listener: FaceclawAudioPacketListener): Boolean { packetListener = listener; return true }
-            override fun stop() { g2Stops++ }
-            override fun isActive(): Boolean = packetListener != null
+            override fun start(listener: FaceclawAudioPacketListener): Boolean { packetListener = listener; g2Starts++; return true }
+            override fun stop() {
+                if (stopDelayMs > 0) sleepMs(stopDelayMs)
+                g2Stops++
+            }
+            override fun isActive(): Boolean = packetListener != null && enableHolds
+            override val streamsContinuously: Boolean get() = continuous
         }
+        override fun micArrayLink(): MicArrayLink? = arrayLink
         override fun createPacketDecoder(): AudioPacketDecoder = object : AudioPacketDecoder {
             override fun decodePacket(packet: ByteArray?, pcmOut: ShortArray?): Int {
                 if (packet == null || packet.size != Lc3PacketFramer.PACKET_BYTES) return 0
@@ -171,6 +185,135 @@ class VoiceCaptureSessionTest {
         assertTrue(events.statuses.contains("Listening (cloud)..."))
         assertTrue(events.transcripts.isEmpty())
         assertTrue(logs.any { it.startsWith("I G2 mic packets=4 decoded=3") && it.contains("wrongArm=1") }, logs.toString())
+    }
+
+    private fun waitFor(timeoutMs: Long, condition: () -> Boolean): Boolean {
+        val deadline = testPlatform().elapsedRealtimeMs() + timeoutMs
+        while (!condition()) {
+            if (testPlatform().elapsedRealtimeMs() > deadline) return false
+            sleepMs(5)
+        }
+        return true
+    }
+
+    @Test
+    fun aMixedStreamThatGoesQuietEndsTheCaptureForItsHolderToStartAgain() {
+        val platform = ShiftedPlatform(testPlatform())
+        val host = FakeHost(platform, g2Ready = true, continuous = true)
+        val events = Events()
+        val session = session(host, platform, "voice-test-quiet")
+        session.setListener(events)
+        session.start("cloud", 5)
+        assertTrue(waitFor(3000) { host.packetListener != null })
+        host.packetListener!!.onAudioPacket(packet(1, 0, 0), "L", 1000)
+        assertTrue(waitFor(3000) { events.pcmChunks.size == 1 })
+        // Short of the limit the capture holds on.
+        platform.offsetMs += VoiceCaptureSession.G2_SILENT_MS - 2000
+        sleepMs(600)
+        assertTrue(session.isCapturing())
+        platform.offsetMs += 2000
+        assertTrue(events.stoppedLatch.await(3000))
+        assertEquals(listOf(5), events.stopped)
+        assertEquals(VoiceCaptureSession.G2_LOST_STATUS, events.statuses.last())
+        assertEquals(1, host.g2Stops)
+        assertFalse(session.isCapturing())
+        assertTrue(logs.any { it.startsWith("W G2 microphone lost: no audio") }, logs.toString())
+    }
+
+    @Test
+    fun aStreamWithNoSteadyRateIsNotEndedBySilenceButIsByALostEnable() {
+        val platform = ShiftedPlatform(testPlatform())
+        val host = FakeHost(platform, g2Ready = true, continuous = false)
+        val events = Events()
+        val session = session(host, platform, "voice-test-lost")
+        session.setListener(events)
+        session.start("cloud", 6)
+        assertTrue(waitFor(3000) { host.packetListener != null })
+        platform.offsetMs += VoiceCaptureSession.G2_SILENT_MS * 4
+        sleepMs(600)
+        assertTrue(session.isCapturing())
+        assertTrue(events.stopped.isEmpty())
+        // The page ended under the capture: the session no longer has the mic enabled.
+        host.enableHolds = false
+        assertTrue(events.stoppedLatch.await(3000))
+        assertEquals(VoiceCaptureSession.G2_LOST_STATUS, events.statuses.last())
+        assertTrue(logs.any { it.startsWith("W G2 microphone lost: the glasses session") }, logs.toString())
+    }
+
+    @Test
+    fun stopLeavesTheMicDisableToTheWorkerAndTheNextCaptureWaitsForIt() {
+        val platform = ShiftedPlatform(testPlatform())
+        val host = FakeHost(platform, g2Ready = true)
+        val events = Events()
+        val session = session(host, platform, "voice-test-overlap")
+        session.setListener(events)
+        session.start("cloud", 1)
+        assertTrue(waitFor(3000) { host.g2Starts == 1 })
+        // The disable outlasts stop()'s wait, as on a slow link.
+        host.stopDelayMs = VoiceCaptureSession.STOP_WAIT_MS + 1000
+        val stopStartedAt = testPlatform().elapsedRealtimeMs()
+        session.stop()
+        val stopTook = testPlatform().elapsedRealtimeMs() - stopStartedAt
+        assertTrue(stopTook < host.stopDelayMs, "stop() sat through the disable ($stopTook ms)")
+        assertEquals(0, host.g2Stops)
+        // A capture started while the first worker is still winding down.
+        host.stopDelayMs = 0
+        session.start("cloud", 2)
+        assertTrue(session.isCapturing())
+        assertTrue(waitFor(5000) { host.g2Starts == 2 }, logs.toString())
+        // The first worker finished before the second touched the mic, and left it alone after.
+        assertEquals(1, host.g2Stops)
+        assertEquals(listOf(1), events.stopped)
+        host.packetListener!!.onAudioPacket(packet(4, 0, 0), "L", 2000)
+        assertTrue(waitFor(3000) { events.pcmChunks.size == 1 })
+        assertTrue(session.isCapturing())
+        session.stop()
+        assertTrue(waitFor(3000) { events.stopped == listOf(1, 2) })
+        assertEquals(2, host.g2Stops)
+        assertFalse(session.isCapturing())
+    }
+
+    private class FakeArrayLink : MicArrayLink {
+        private val lock = testPlatform().createLock()
+        private val controls = mutableListOf<String>()
+        @Volatile var forwarding: FaceclawAudioPacketListener? = null
+        override fun startForwarding(listener: FaceclawAudioPacketListener): Boolean { forwarding = listener; return true }
+        override fun stopForwarding() { forwarding = null }
+        override fun isForwarding(): Boolean = forwarding != null
+        override fun sendControl(record: ByteArray, label: String, rightTemple: Boolean, leftTemple: Boolean): Boolean {
+            lock.withLock { controls.add(label) }
+            return true
+        }
+        fun sent(): List<String> = lock.withLock { controls.toList() }
+    }
+
+    @Test
+    fun templesThatNeverStreamHandTheCaptureToTheMixedStream() {
+        val platform = ShiftedPlatform(testPlatform())
+        val link = FakeArrayLink()
+        val host = FakeHost(platform, g2Ready = true, arrayLink = link)
+        val events = Events()
+        val session = session(host, platform, "voice-test-fallback")
+        session.setListener(events)
+        val configure = byteArrayOf('M'.code.toByte(), 'C'.code.toByte(), MicArrayProtocol.VERSION.toByte(), MicArrayProtocol.OP_CONFIGURE.toByte()) + ByteArray(9)
+        session.setMicArray(configure)
+        session.start("cloud", 8)
+        assertTrue(waitFor(3000) { link.sent().isNotEmpty() })
+        assertEquals("configure", link.sent().first())
+        assertEquals(0, host.g2Starts)
+        platform.offsetMs += VoiceCaptureSession.ARRAY_FALLBACK_MS
+        assertTrue(waitFor(3000) { host.g2Starts == 1 }, logs.toString())
+        // The temples were stopped before the mixed stream was asked for.
+        assertEquals("stop", link.sent().last())
+        assertFalse(link.isForwarding())
+        assertTrue(session.isCapturing())
+        host.packetListener!!.onAudioPacket(packet(2, 0, 0), "L", 3000)
+        assertTrue(waitFor(3000) { events.pcmChunks.size == 1 })
+        session.stop()
+        assertTrue(events.stoppedLatch.await(3000))
+        assertEquals(listOf(8), events.stopped)
+        assertEquals(1, host.g2Stops)
+        assertTrue(logs.any { it.startsWith("W mic array streamed nothing") }, logs.toString())
     }
 
     @Test

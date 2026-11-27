@@ -6,8 +6,11 @@ const vm = require('node:vm');
 const ts = require('typescript');
 const { Menu } = require('../.test-build/app/ui/menu-core.js');
 
+// The real restart backoff: it has no dependencies, and what is under test constructs it.
+const captureRestart = require('./helpers/load-typescript.cjs').loader()('app/native/capture-restart.ts');
 function load(file, deps, globals = {}) {
   const exports = {};
+  deps = { './capture-restart': captureRestart, ...deps };
   vm.runInNewContext(ts.transpileModule(fs.readFileSync(path.join(__dirname, '..', file), 'utf8'), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
   }).outputText, { exports, console, ...globals, require: name => deps[name] ?? {} });
@@ -23,7 +26,7 @@ function dialog({ autoSend = false, deferred = true, synchronousFinal, isIOS = f
       onTranscript(cb) { listeners.add(cb); return () => listeners.delete(cb); },
       onStatus() { return () => {}; },
       onSpeechEnd(cb) { speechEnd = cb; return () => { speechEnd = null; }; },
-      stop() {},
+      cancelPushToTalk() {},
     } },
     '../../native/anthropic': { refineDictation(options) { refinements.push(options); return { cancel() {} }; } },
     '../dashboard-settings': { anthropicApiKeySetting: { get: () => 'key' } },

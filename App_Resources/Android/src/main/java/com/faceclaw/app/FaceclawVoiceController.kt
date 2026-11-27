@@ -105,22 +105,34 @@ class FaceclawVoiceController(context: Context) {
         override fun g2AudioSource(): PacketAudioSource? {
             val currentCommunicator = communicator ?: return null
             return object : PacketAudioSource {
-                override fun start(listener: FaceclawAudioPacketListener): Boolean =
-                    currentCommunicator.startG2AudioCapture(listener)
+                // The stream is this source's while its listener is the session's: a
+                // stop that comes after another capture took the mic leaves that one be.
+                private var started: FaceclawAudioPacketListener? = null
 
-                override fun stop() = currentCommunicator.stopG2AudioCapture()
+                override fun start(listener: FaceclawAudioPacketListener): Boolean {
+                    started = listener
+                    return currentCommunicator.startG2AudioCapture(listener)
+                }
+
+                override fun stop() = currentCommunicator.stopG2AudioCapture(started)
 
                 override fun isActive(): Boolean = currentCommunicator.isAudioCaptureActive()
+
+                override val streamsContinuously: Boolean get() = currentCommunicator.micStreamsContinuously()
             }
         }
 
         override fun micArrayLink(): MicArrayLink? {
             val currentCommunicator = communicator ?: return null
             return object : MicArrayLink {
-                override fun startForwarding(listener: FaceclawAudioPacketListener): Boolean =
-                    currentCommunicator.startG2AudioForwarding(listener)
+                private var forwarding: FaceclawAudioPacketListener? = null
 
-                override fun stopForwarding() = currentCommunicator.stopG2AudioForwarding()
+                override fun startForwarding(listener: FaceclawAudioPacketListener): Boolean {
+                    forwarding = listener
+                    return currentCommunicator.startG2AudioForwarding(listener)
+                }
+
+                override fun stopForwarding() = currentCommunicator.stopG2AudioForwarding(forwarding)
 
                 override fun isForwarding(): Boolean = currentCommunicator.isAudioCaptureActive()
 

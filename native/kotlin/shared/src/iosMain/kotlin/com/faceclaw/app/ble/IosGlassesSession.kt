@@ -162,6 +162,9 @@ class IosGlassesSession internal constructor(
 
     fun isAudioCaptureActive(): Boolean = core.isAudioCaptureActive()
 
+    /** See [GlassesSessionCore.micStreamsContinuously]. */
+    fun micStreamsContinuously(): Boolean = core.micStreamsContinuously()
+
     fun setFaceclawWakeLeaseEnabled(enabled: Boolean): Boolean = core.setFaceclawWakeLeaseEnabled(enabled)
 
     fun awaitEvenHubSessionReady(timeoutMs: Int): Boolean = core.awaitEvenHubSessionReady(timeoutMs)

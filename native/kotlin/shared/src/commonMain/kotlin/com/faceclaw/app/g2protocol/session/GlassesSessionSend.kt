@@ -1137,7 +1137,11 @@ internal fun GlassesSessionCore.createAudioControlMessageLocked(enable: Boolean)
         logLine(if (audioCaptureActive) "G2 mic enabled" else "G2 mic disabled")
     }
     message.onTimeout = MessageCallback {
-        handleTransportFailure("audio control ack timeout")
+        // An enable that went unanswered leaves the capture without a mic. A disable is
+        // best effort: the glasses don't answer one once the page is gone, and a dead
+        // link is the heartbeat's to find.
+        if (enable) handleTransportFailure("audio control ack timeout")
+        else logLine("G2 mic disable went unanswered")
     }
     return message
 }
@@ -1311,6 +1315,8 @@ internal fun GlassesSessionCore.updateChargingModeLocked(charging: Boolean, batt
         pendingMessages.addLast(messageBuilder.caseInfoQuery())
         fixedLayoutCreated = false
         startupProbePending = false
+        // The page (and the mic enable in it) goes with the display communication.
+        audioCaptureActive = false
         displayedFingerprint = ""
         finishDesiredFrameLocked("discarded: glasses charging")
         logLine("glasses are charging; pausing display communication")

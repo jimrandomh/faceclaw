@@ -81,6 +81,9 @@ private class FakeLink(private val platform: ProtocolPlatform) : SessionLink {
     @Volatile var keepsLink = false
     /** Each [releaseFromPeer] call: the address, plus what the link had seen by then. */
     val releases = ArrayList<Release>()
+    /** While set, every write waits on it before going out; [held] counts the ones waiting or let through. */
+    @Volatile var hold: Latch? = null
+    @Volatile var held = 0
 
     class Release(val address: String, val characteristicUuid: String, val request: ByteArray, val cleanupsWritten: Int, val disconnects: Int)
 
@@ -120,6 +123,10 @@ private class FakeLink(private val platform: ProtocolPlatform) : SessionLink {
     override fun enableNotifications(address: String, characteristicUuid: String, enable: Boolean, timeoutMs: Int): Boolean = true
 
     override fun writeFrames(address: String, characteristicUuid: String, frames: List<ByteArray>, mode: GattWriteMode, timeoutMs: Int): Boolean {
+        hold?.let {
+            held++
+            it.await(10_000)
+        }
         val sid = frames[0][6].toInt() and 255
         val magic = if (sid == CfwTransport.SID) frames[0][2].toInt() and 255 else BleProtocol.parseFrame(frames[0]).msgSeq
         // The in-flight entry gives the label/kind and the decoded CFW message.
@@ -1259,5 +1266,139 @@ class GlassesSessionCoreTest {
         } finally {
             s.core.close()
         }
+    }
+
+    private class Packets : FaceclawAudioPacketListener {
+        @Volatile var count = 0
+
+        override fun onAudioPacket(data: ByteArray?, arm: String?, arrivalMs: Long) {
+            count++
+        }
+    }
+
+    private fun micWrites(s: Session, label: String) = s.link.writes.filter { it.kind == MessageBuilder.AUDIO_CONTROL_KIND && it.label == label }
+
+    @Test
+    fun aMicDisableIsNotSentOnceThePageIsGoneAndAnotherCapturesStreamIsLeftAlone() {
+        val s = Session()
+        s.startAndAwaitLayout()
+        try {
+            val first = Packets()
+            assertTrue(s.core.startG2AudioCapture(first))
+            assertTrue(s.core.isAudioCaptureActive())
+            // A capture that was replaced can't take the stream from the one that replaced it.
+            val second = Packets()
+            assertTrue(s.core.startG2AudioCapture(second))
+            s.core.stopG2AudioCapture(first)
+            assertTrue(s.core.isAudioCaptureActive())
+            assertEquals(0, micWrites(s, "G2 mic disable").size)
+            s.core.onNotification(LEFT, BleProtocol.RENDER_NOTIFY_UUID, ByteArray(205))
+            assertEquals(1, second.count)
+            assertEquals(0, first.count)
+
+            // The suspend ends the page and the enable with it: nothing would answer a disable.
+            assertTrue(s.core.suspendEvenHubSession())
+            assertFalse(s.core.isAudioCaptureActive())
+            val startedAt = s.platform.elapsedRealtimeMs()
+            s.core.stopG2AudioCapture(second)
+            assertTrue(s.platform.elapsedRealtimeMs() - startedAt < 1000, "the stop waited on an acknowledgement")
+            assertEquals(0, micWrites(s, "G2 mic disable").size)
+            assertTrue(s.host.hasLog("skip G2 mic disable; no EvenHub page"))
+            assertTrue(s.core.isSessionReady())
+        } finally { s.core.close() }
+    }
+
+    @Test
+    fun aMicDisableThatGoesUnansweredLeavesTheSessionUp() {
+        val s = Session()
+        s.startAndAwaitLayout()
+        try {
+            assertTrue(s.core.startG2AudioCapture(Packets()))
+            val connects = s.link.connects
+            s.link.muted.add(MessageBuilder.AUDIO_CONTROL_KIND)
+            val stopped = Latch(1, s.platform)
+            startThread("test-mic-stop", true) {
+                s.core.stopG2AudioCapture()
+                stopped.countDown()
+            }
+            assertTrue(waitUntil(5_000) { micWrites(s, "G2 mic disable").isNotEmpty() })
+            s.platform.offsetMs += 10_000
+            s.core.interruptibleSleep.interrupt()
+            assertTrue(stopped.await(5_000))
+            assertTrue(waitUntil(5_000) { s.host.hasLog("G2 mic disable went unanswered") }, s.host.logs().takeLast(20).toString())
+            assertFalse(s.host.hasLog("Transport failure"), s.host.logs().takeLast(20).toString())
+            assertTrue(s.core.isSessionReady())
+            assertEquals(connects, s.link.connects)
+        } finally { s.core.close() }
+    }
+
+    @Test
+    fun anUnansweredMicEnableStillReconnects() {
+        val s = Session()
+        s.startAndAwaitLayout()
+        try {
+            s.link.muted.add(MessageBuilder.AUDIO_CONTROL_KIND)
+            val refused = Latch(1, s.platform)
+            startThread("test-mic-start", true) {
+                if (!s.core.startG2AudioCapture(Packets())) refused.countDown()
+            }
+            assertTrue(waitUntil(5_000) { micWrites(s, "G2 mic enable").isNotEmpty() })
+            s.platform.offsetMs += 10_000
+            s.core.interruptibleSleep.interrupt()
+            assertTrue(refused.await(5_000))
+            assertTrue(waitUntil(5_000) { s.host.hasLog("Transport failure: audio control ack timeout") }, s.host.logs().takeLast(20).toString())
+        } finally { s.core.close() }
+    }
+
+    @Test
+    fun aPageThatEndsOnItsOwnTakesTheMicEnableWithIt() {
+        val s = Session()
+        s.startAndAwaitLayout()
+        try {
+            val packets = Packets()
+            assertTrue(s.core.startG2AudioCapture(packets))
+            val exit = BleProtocol.encodeVarintField(1, 2) + BleProtocol.encodeBytesField(13,
+                BleProtocol.encodeBytesField(3, BleProtocol.encodeVarintField(1, BleProtocol.EVENT_SYSTEM_EXIT)))
+            s.core.onNotification(RIGHT, BleProtocol.NOTIFY_CHAR_UUID,
+                BleProtocol.framePb(exit, BleProtocol.SID_EVENHUB, BleProtocol.FLAG_NOTIFY, 11)[0])
+            assertFalse(s.core.isAudioCaptureActive())
+            // The session puts the page back; the capture has to ask for the mic again.
+            assertTrue(waitUntil(5_000) { s.layoutCreated() })
+            assertFalse(s.core.isAudioCaptureActive())
+            assertTrue(s.core.startG2AudioCapture(packets))
+            assertTrue(s.core.isAudioCaptureActive())
+        } finally { s.core.close() }
+    }
+
+    @Test
+    fun theMicEnableGoesOutBehindAMicControlStopThatWasQueuedFirst() {
+        val s = Session()
+        s.startAndAwaitLayout()
+        try {
+            val stop = MicArrayProtocol.control(MicArrayProtocol.OP_STOP)
+            fun stopWrites() = s.link.writes.filter { it.sid == BleProtocol.SID_UI_SETTING && it.pb.containsSequence(stop) }
+            // Hold the link so the left temple's STOP is still queued when the enable is.
+            assertTrue(waitUntil(5_000) { s.core.monitor.withLock { s.core.pendingMessages.isEmpty() && s.core.inFlightMessages.isEmpty() } })
+            val hold = Latch(1, s.platform)
+            s.link.hold = hold
+            val heldBefore = s.link.held
+            assertTrue(s.core.sendFaceclawMicControl(stop, "stop", true, true))
+            assertTrue(waitUntil(5_000) { s.link.held > heldBefore })
+            val enabled = Latch(1, s.platform)
+            startThread("test-mic-start", true) {
+                if (s.core.startG2AudioCapture(Packets())) enabled.countDown()
+            }
+            assertTrue(waitUntil(5_000) {
+                s.core.monitor.withLock { s.core.pendingMessages.any { it.kind == MessageBuilder.AUDIO_CONTROL_KIND } }
+            })
+            s.link.hold = null
+            hold.countDown()
+            assertTrue(enabled.await(5_000), s.host.logs().takeLast(20).toString())
+            val writes = s.link.writes
+            val lastStop = writes.indexOfLast { it.sid == BleProtocol.SID_UI_SETTING && it.pb.containsSequence(stop) }
+            val enable = writes.indexOfFirst { it.kind == MessageBuilder.AUDIO_CONTROL_KIND && it.label == "G2 mic enable" }
+            assertEquals(setOf(RIGHT, LEFT), stopWrites().map { it.address }.toSet())
+            assertTrue(lastStop in 0 until enable, "stop at $lastStop, enable at $enable")
+        } finally { s.core.close() }
     }
 }

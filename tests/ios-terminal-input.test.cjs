@@ -23,7 +23,7 @@ test('iOS Type Into App submits UTF-8 terminal text and delays Enter at the byte
   client.ws = { sendText: json => sent.push(JSON.parse(json)) };
   client.handleMessage(JSON.stringify({ type: 'connect', command: 'test' }));
   const { VoiceInputLayer } = load('app/ui/shell/voice-input.ts', {
-    require: id => id.includes('voice-control') ? { voiceControlBridge: { stop() {} } }
+    require: id => id.includes('voice-control') ? { voiceControlBridge: { cancelPushToTalk() {} } }
       : id.includes('dashboard-settings') ? { anthropicApiKeySetting: { get: () => '' } }
       : id.includes('input-dialog') ? { createInputDialogMenu: (items, selectedIndex) =>
         new Menu({ items, selectedIndex, wrap: true, getHeight: () => 1, draw() {} }) } : {},

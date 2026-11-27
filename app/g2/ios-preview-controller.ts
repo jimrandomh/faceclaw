@@ -17,6 +17,7 @@ import { bindCompassSession, receiveCompassEvent } from '../native/compass.ios'
 import { bindBandwidthBenchmarkSession } from '../native/bandwidth-benchmark.ios'
 import { Dialogs, File, knownFolders, path, Utils, type ImageSource } from '@nativescript/core'
 import { iosVoiceInput } from '../native/ios-voice-input'
+import { CaptureRestartBackoff } from '../native/capture-restart'
 import { voiceActivity } from '../ui/shell/voice-activity'
 import { nightscoutBridge } from '../native/nightscout-bridge'
 import { weatherBridge } from '../native/weather'
@@ -174,6 +175,9 @@ export class IosPreviewController {
   private continuousPending = false
   private continuousCaptureToken = 0
   private sessionConnected = false
+  // A continuous capture that ended on its own (see retryContinuousCapture).
+  private continuousRetryTimer: ReturnType<typeof setTimeout> | null = null
+  private readonly continuousRetryBackoff = new CaptureRestartBackoff()
   /** The Apple Watch remote; constructed last so it sees a fully wired shell. */
   private wearRemote: WearRemote | null = null
   private readonly actions: LayerActions = {
@@ -306,8 +310,7 @@ export class IosPreviewController {
       launchApp: id => this.launchApp(id), requestShellRender: () => this.requestShellRender() })
     registerNavigateTools(id => this.launchApp(id))
     registerRoamTools(id => this.launchApp(id))
-    // Every capture end (drained, failed, replaced) may leave continuous capture to restart.
-    iosVoiceInput.onSpeechEnd(() => this.syncContinuousCapture())
+    iosVoiceInput.onSpeechEnd(() => this.handleVoiceCaptureEnded())
     for (const app of ALL_APPS) if (app.appId !== 'launcher' && !iosAppUnavailableReason(app.appId)) app.boot?.(this.buildAppContext(app))
     this.wearRemote = new WearRemote({
       apps: () => ALL_APPS.filter(app => app.showInLauncher !== false && app.isSupported?.() !== false && !iosAppUnavailableReason(app.appId)),
@@ -1239,15 +1242,50 @@ export class IosPreviewController {
     // A start still awaiting permission or the mic backs off.
     ++this.continuousCaptureToken
     this.continuousPending = false
+    this.cancelContinuousRetry()
+    this.continuousRetryBackoff.reset()
     this.syncContinuousClaim()
     void iosVoiceInput.stopContinuousCapture().catch(error => this.logBluetooth(`Stop continuous capture: ${String(error)}`))
   }
   /** Connecting or losing the glasses moves continuous capture to the new audio source. */
   private syncContinuousSession(): void {
     const connected = this.state.phase === 'connected'
-    if (connected !== this.sessionConnected && this.continuousClients.size > 0) this.continuousPending = true
+    if (connected !== this.sessionConnected) {
+      if (this.continuousClients.size > 0) this.continuousPending = true
+      // A new audio source is a fresh start, not another try at a failing one.
+      this.continuousRetryBackoff.reset()
+    }
     this.sessionConnected = connected
     this.syncContinuousCapture()
+  }
+  /** Every capture end (drained, failed, replaced) may leave continuous capture to restart. */
+  private handleVoiceCaptureEnded(): void {
+    this.syncContinuousCapture()
+    this.retryContinuousCapture()
+  }
+  /**
+   * A continuous capture ended and nothing here asked it to: the glasses
+   * refused the mic (their display path isn't up yet right after connecting,
+   * or they are in the case), stopped sending audio, or the provider gave up.
+   * Its windows still want it, so try again, later each time it keeps failing.
+   * Ends the controller asked for set continuousPending and need none of this.
+   */
+  private retryContinuousCapture(): void {
+    if (this.continuousClients.size === 0 || this.continuousPending || this.continuousRetryTimer !== null) return
+    // A push-to-talk capture of its own is running or draining: its end comes back here.
+    if (iosVoiceInput.captureActive || !iosVoiceInput.supportsContinuous(this.voiceProvider())) return
+    const delay = this.continuousRetryBackoff.nextDelay(Date.now())
+    this.logBluetooth(`Voice: continuous capture ended by itself; starting it again in ${delay} ms`)
+    this.continuousRetryTimer = setTimeout(() => {
+      this.continuousRetryTimer = null
+      if (this.continuousClients.size === 0 || iosVoiceInput.captureActive) return
+      this.continuousPending = true
+      this.syncContinuousCapture()
+    }, delay)
+  }
+  private cancelContinuousRetry(): void {
+    if (this.continuousRetryTimer !== null) clearTimeout(this.continuousRetryTimer)
+    this.continuousRetryTimer = null
   }
   /**
    * Keep continuous capture running while a window wants it: start a pending
@@ -1285,6 +1323,8 @@ export class IosPreviewController {
     const log = (message: string) => this.logBluetooth(message)
     // Claimed before the capture starts so other mic users stand down first, as on Android.
     voiceActivity.setActive(true, CONTINUOUS_CAPTURE_HOLDER)
+    this.cancelContinuousRetry()
+    this.continuousRetryBackoff.started(Date.now())
     const communicator = this.communicator
     if (communicator) {
       await iosVoiceInput.startGlassesCapture(communicator, voice, log, false, true)

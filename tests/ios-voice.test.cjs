@@ -402,3 +402,84 @@ test('backgrounding drains a continuous phone capture', async () => {
   assert.equal(h.text.at(-1).text, 'Tail.');
   assert.match(h.bridge.statusText, /background/);
 });
+
+test('the voice dialog going away leaves a continuous capture it had joined, and drops one of its own', async () => {
+  const h = harness(); let ends = 0; h.bridge.onSpeechEnd(() => ends++);
+  const start = h.bridge.startGlassesCapture(h.session, h.cloud, () => {}, false, true); h.release(); await start;
+  // The dialog's push-to-talk joined Transcribe's capture; closing the dialog must not end it.
+  await h.bridge.startGlassesCapture(h.session, h.cloud, () => {});
+  await h.bridge.stopPushToTalk();
+  h.bridge.cancelPushToTalk();
+  assert.equal(h.bridge.continuousSource, 'glasses');
+  assert.deepEqual(h.commands, [true]); assert.equal(h.native.cancels, 0); assert.equal(h.clouds[0].stopped, false);
+  const stopped = h.bridge.stopContinuousCapture(); h.event({ kind: 'ended' }); h.clouds[0].options.onTranscript({ text: '', isFinal: true });
+  await stopped;
+
+  // A push-to-talk capture of its own, still draining when the dialog closes, is dropped.
+  const own = harness();
+  const ownStart = own.bridge.startGlassesCapture(own.session, own.onboard, () => {}); own.release(); await ownStart;
+  own.bridge.stopPushToTalk();
+  assert.equal(own.bridge.captureActive, true);
+  own.bridge.cancelPushToTalk();
+  assert.equal(own.bridge.captureActive, false); assert.equal(own.native.cancels, 1); assert.equal(own.timers.size, 0);
+});
+
+test('a steady stream that goes quiet drains the capture for the controller to start again; an unsteady one is left alone', async () => {
+  const fire = h => { for (const fn of [...h.timers.values()]) { h.timers.delete(fn); fn(); } };
+  const h = harness(); let ends = 0; h.bridge.onSpeechEnd(() => ends++);
+  h.session.micStreamsContinuously = () => true;
+  const start = h.bridge.startGlassesCapture(h.session, h.cloud, () => {}, false, true); h.release(); await start;
+  h.session.packet(new Uint8Array([1]));
+  fire(h);
+  // Audio came in the first interval: the watch goes on.
+  assert.equal(h.bridge.continuousSource, 'glasses'); assert.equal(h.timers.size, 1);
+  h.session.packet(new Uint8Array([2]));
+  fire(h);
+  assert.equal(h.bridge.continuousSource, 'glasses');
+  // Nothing since the last look: the glasses dropped the mic (their page ended, or they are in the case).
+  fire(h);
+  assert.equal(h.bridge.continuousSource, null);
+  assert.deepEqual(h.commands, [true, false]); assert.equal(h.native.finished, true);
+  h.event({ kind: 'ended', message: 'Transcription stopped.' });
+  h.clouds[0].options.onTranscript({ text: 'what it heard', isFinal: true });
+  assert.match(h.bridge.statusText, /Waiting for the glasses microphone/);
+  assert.equal(ends, 1); assert.equal(h.bridge.continuousActive, false);
+  assert.deepEqual(h.text.map(event => event.text), ['what it heard']);
+
+  // A stream with no steady rate is only waited on for its first audio.
+  const other = harness();
+  const otherStart = other.bridge.startGlassesCapture(other.session, other.cloud, () => {}, false, true); other.release(); await otherStart;
+  other.session.packet(new Uint8Array([1]));
+  fire(other);
+  assert.equal(other.timers.size, 0); assert.equal(other.bridge.continuousSource, 'glasses');
+});
+
+test('the raw tap keeps trying after repeated failures, and restarts when a steady stream goes quiet', async () => {
+  const fire = h => { for (const fn of [...h.timers.values()]) { h.timers.delete(fn); fn(); } };
+  const settle = () => new Promise(resolve => setImmediate(resolve));
+  const h = harness(); const logs = [];
+  // The glasses refuse the mic (docked: no display path).
+  let refuse = true; const enables = [];
+  const session = { micStreamsContinuously: () => true, setMicrophone(enabled, fn) {
+    enables.push(enabled); if (enabled) { this.packet = fn; return refuse ? Promise.reject(new Error('refused')) : Promise.resolve(); }
+    return Promise.resolve();
+  } };
+  h.bridge.setRawSession(session, message => logs.push(message));
+  assert.equal(h.bridge.startRawCapture({ communicator: null, owner: 'evenhub-mic-router' }), true);
+  await settle();
+  for (let attempt = 0; attempt < 8; attempt++) { assert.equal(h.timers.size, 1, `retry ${attempt} is scheduled`); fire(h); await settle(); }
+  assert.equal(enables.filter(Boolean).length, 9);
+  // Out of the case: the next try goes through, and audio flows.
+  refuse = false; fire(h); await settle();
+  assert.equal(h.bridge.isRawCaptureLive(), true);
+  session.packet(new Uint8Array([1])); fire(h);
+  assert.equal(h.bridge.isRawCaptureLive(), true);
+  // Then the stream goes quiet under it.
+  fire(h); await settle();
+  assert.equal(h.bridge.isRawCaptureLive(), false);
+  assert.ok(logs.some(message => /no audio from the glasses/.test(message)));
+  fire(h); await settle();
+  assert.equal(h.bridge.isRawCaptureLive(), true);
+  h.bridge.stopRawCapture('evenhub-mic-router');
+  assert.equal(h.timers.size, 0);
+});

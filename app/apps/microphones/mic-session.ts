@@ -122,6 +122,10 @@ const FEED_SWITCH_HOLD_MS = 500;
 // How often capture is checked: brought up if it isn't, re-acquired if
 // audio stopped arriving.
 const CAPTURE_CHECK_MS = 3000;
+// Temples that have sent no frame at all this many capture checks after
+// arming (15 s, three CONFIGUREs each) are not going to: the session goes on
+// with the mixed stream until the setup changes or it is started again.
+const EXTENDED_FALLBACK_CHECKS = 5;
 // A caption engine that dies on its own is restarted on the same
 // conversation, with growing delays, this many times before captions give up.
 const CAPTION_MAX_RESTARTS = 3;
@@ -218,6 +222,10 @@ class MicSession {
   private captureStalled = false;
   // Consecutive checks that found the stock raw tap dead and restarted it.
   private stockRestarts = 0;
+  // 4-mic capture armed but the temples never streamed; see EXTENDED_FALLBACK_CHECKS.
+  private extendedUnavailable = false;
+  private extendedStreamed = false;
+  private extendedSilentChecks = 0;
 
   // Radar state.
   private levels: number[] = [];
@@ -360,6 +368,7 @@ class MicSession {
     this.speakerDots = [];
     this.captionsFailure = "";
     this.conversationLang = "und";
+    this.extendedUnavailable = false;
 
     this.activeConfig = loadMicConfig();
     this.refreshCachedFlags();
@@ -416,7 +425,7 @@ class MicSession {
   }
 
   private desiredMode(): "stock" | "extended" {
-    return micControlSupported() && this.activeConfig.armHardware ? "extended" : "stock";
+    return micControlSupported() && this.activeConfig.armHardware && !this.extendedUnavailable ? "extended" : "stock";
   }
 
   /**
@@ -468,6 +477,8 @@ class MicSession {
     const config = mutate(loadMicConfig());
     const directionChanged = config.beamform !== this.activeConfig.beamform;
     const modeBefore = this.mode;
+    // A changed setup is worth another try at the temples' own microphones.
+    this.extendedUnavailable = false;
     // Before saving: the save's settings event re-checks the capture mode.
     this.activeConfig = config;
     saveMicConfig(config);
@@ -549,7 +560,7 @@ class MicSession {
       if (this.mode === "extended" && this.captureUp) {
         micArrayController.stopStreaming();
         try {
-          this.nativeCommunicator()?.stopG2AudioForwarding();
+          this.nativeCommunicator()?.stopG2AudioForwarding(this.forwardingProxy);
         } catch {
           // Disconnected; nothing to stop.
         }
@@ -620,6 +631,12 @@ class MicSession {
       // Routine after the voice dialog or a reconnect; the frame check below
       // reports a stall if the temples don't start streaming.
       return this.armExtended() && !this.captureStalled;
+    }
+    if (!this.extendedStreamed && ++this.extendedSilentChecks >= EXTENDED_FALLBACK_CHECKS) {
+      console.warn("mic array streamed nothing; capturing the mixed stream instead");
+      this.extendedUnavailable = true;
+      this.syncCaptureMode();
+      return this.captureUp;
     }
     const now = Date.now();
     const wire = wireConfig(this.activeConfig);
@@ -817,6 +834,8 @@ class MicSession {
       },
     });
     if (!communicator.startG2AudioForwarding(this.forwardingProxy)) return false;
+    this.extendedStreamed = false;
+    this.extendedSilentChecks = 0;
     return this.armExtended();
   }
 
@@ -840,7 +859,8 @@ class MicSession {
     micArrayController.stopStreaming();
     const communicator = this.nativeCommunicator();
     try {
-      communicator?.stopG2AudioForwarding();
+      // Only while the stream is still this session's: another mic user may have taken it.
+      communicator?.stopG2AudioForwarding(this.forwardingProxy);
     } catch {
       // Already disconnected.
     }
@@ -870,6 +890,7 @@ class MicSession {
     const channels = splitInterleavedPcm16(frame);
     if (!channels || channels.length === 0) return;
     const now = Date.now();
+    this.extendedStreamed = true;
     this.templeFrameAtMs[side] = now;
 
     // Meter every arriving channel — a host-disabled mic still shows its

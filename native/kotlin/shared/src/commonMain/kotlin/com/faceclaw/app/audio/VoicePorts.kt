@@ -65,6 +65,12 @@ interface PacketAudioSource {
 
     /** Whether the glasses are still delivering packets for this capture. */
     fun isActive(): Boolean
+
+    /**
+     * Whether packets come at a steady rate for as long as the capture is active, in silence
+     * too (the G2's mixed stream does), so that a few seconds without any mean it ended.
+     */
+    val streamsContinuously: Boolean get() = false
 }
 
 /**

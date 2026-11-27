@@ -653,6 +653,13 @@ class GlassesSessionCore(
     /** True when this session drives a RayNeo iO. */
     fun isRayNeoIo(): Boolean = isIo
 
+    /**
+     * Whether the mic stream sends packets at a steady rate for as long as it is on, speech or
+     * not, so that silence on the link means it stopped. The G2's mixed stream does (a packet
+     * every 50 ms); the others' cadence isn't relied on.
+     */
+    fun micStreamsContinuously(): Boolean = isG2
+
     /** Start the worker (through the host); false when it was already running. */
     fun start(): Boolean {
         monitor.withLock {
@@ -827,26 +834,41 @@ class GlassesSessionCore(
             audioPacketListener = listener
             val message = createAudioControlMessageLocked(true)
             magic = message.magic
-            pendingMessages.addFirst(message)
+            // Ahead of queued display traffic, but behind any mic_control record still
+            // waiting: a STOP that reached the glasses after this enable would stop the
+            // audio service under the stream it had just started.
+            pendingMessages.add(pendingMessages.indexOfLast { it.kind == MessageBuilder.MIC_CONTROL_KIND } + 1, message)
             logLine("queue G2 mic enable")
         }
         interruptibleSleep.interrupt()
         return waitForAudioControlAck(magic, "enable")
     }
 
-    fun stopG2AudioCapture() {
+    /**
+     * End the mic capture. With [owner], only when it is still that listener's: a capture
+     * winding down late must not take the stream from the one that started after it.
+     */
+    fun stopG2AudioCapture(owner: FaceclawAudioPacketListener? = null) {
         if (isIo) return ioStopAudioCapture()
         if (isG1) return g1StopAudioCapture()
         var magic = 0
         monitor.withLock {
+            if (owner != null && audioPacketListener != null && audioPacketListener !== owner) {
+                logLine("skip G2 mic disable; another capture holds the stream")
+                return
+            }
             audioPacketListener = null
             audioCaptureActive = false
-            clearMessagesOfKindLocked("audio-control")
-            if (running && sessionReady) {
+            clearMessagesOfKindLocked(MessageBuilder.AUDIO_CONTROL_KIND)
+            // The enable lives in the EvenHub page and ends with it. With no page the
+            // glasses don't answer a disable, and waiting on one would stall the caller.
+            if (running && sessionReady && !shutdownRequested && fixedLayoutCreated) {
                 val message = createAudioControlMessageLocked(false)
                 magic = message.magic
                 pendingMessages.addFirst(message)
                 logLine("queue G2 mic disable")
+            } else if (running && sessionReady) {
+                logLine("skip G2 mic disable; no EvenHub page")
             }
         }
         interruptibleSleep.interrupt()
@@ -1615,8 +1637,13 @@ class GlassesSessionCore(
         return true
     }
 
-    fun stopG2AudioForwarding() {
+    /** End forwarding; with [owner], only when it is still that listener's (see stopG2AudioCapture). */
+    fun stopG2AudioForwarding(owner: FaceclawAudioPacketListener? = null) {
         monitor.withLock {
+            if (owner != null && audioPacketListener != null && audioPacketListener !== owner) {
+                logLine("skip G2 audio forwarding stop; another capture holds the stream")
+                return
+            }
             audioPacketListener = null
             audioCaptureActive = false
             logLine("G2 audio forwarding disabled")
@@ -2378,6 +2405,9 @@ class GlassesSessionCore(
                             }
                             fixedLayoutCreated = false
                             displayedFingerprint = ""
+                            // The mic enable ended with the page; a capture that reads
+                            // isAudioCaptureActive sees it and asks again on the new one.
+                            audioCaptureActive = false
                             // The page ended (our own suspend sends this too), not the CFW
                             // session: resources, root list and screen buffer are intact.
                             clearAllMessagesLocked("firmware exit event", keepResources = true)

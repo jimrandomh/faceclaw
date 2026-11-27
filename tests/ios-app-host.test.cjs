@@ -9,8 +9,12 @@ const voiceSettings = { voiceProviderSetting: { get: () => 'onboard' }, elevenLa
   openAiApiKeySetting: { get: () => '' }, sonioxApiKeySetting: { get: () => '' },
   whisperServerUrlSetting: { get: () => '' }, whisperServerModelSetting: { get: () => '' },
   whisperServerLanguageSetting: { get: () => '' }, whisperServerApiKeySetting: { get: () => '' } };
+// The real restart backoff: it has no dependencies, and what is under test constructs it.
+const captureRestart = require('./helpers/load-typescript.cjs').loader()('app/native/capture-restart.ts');
 function load(file, context) {
   const sandbox = { exports: {}, ...context };
+  const stubbed = sandbox.require;
+  if (stubbed) sandbox.require = id => id.endsWith('/capture-restart') ? captureRestart : stubbed(id);
   const source = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
   vm.runInNewContext(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText, sandbox);
   return sandbox.exports;
@@ -371,6 +375,7 @@ test('iOS continuous capture is shared by windows and restarts after a disconnec
     supportsContinuous: voice => voice.provider !== 'onboard',
     get continuousSource() { return this.source; },
     get continuousActive() { return !!this.source || this.draining; },
+    get captureActive() { return !!this.source || this.draining; },
     prepare: async () => true,
     startGlassesCapture: async (_session, voice, _log, _endpointing, continuous) => {
       calls.push(['glasses', continuous]); providers.push(`${voice.provider}:${voice.language}`); bridge.source = 'glasses'; },
@@ -384,19 +389,26 @@ test('iOS continuous capture is shared by windows and restarts after a disconnec
   const settings = { ...voiceSettings, voiceProviderSetting: { get: () => 'whisper-server' },
     whisperServerUrlSetting: { get: () => 'http://whisper.local:8000' }, whisperServerLanguageSetting: { get: () => 'en' },
     saveRecordingSetting: { get: () => saveRecording } };
+  // Timers the test fires by hand: the wait before a capture that ended by itself is tried again.
+  const timers = new Map(); let timerId = 0;
+  const waits = () => Array.from(timers.values(), timer => timer.ms);
+  const fireTimers = () => { for (const [id, timer] of [...timers]) { timers.delete(id); timer.callback(); } };
   const { IosPreviewController } = load('app/g2/ios-preview-controller.ts', {
     require: id => id === '../native/ios-voice-input' ? { iosVoiceInput: bridge } : id === '../ui/dashboard-settings' ? settings
       : id === '../ui/shell/voice-activity' ? { voiceActivity: { setActive: (active, holder) => claims.push([active, holder]) } }
       : id === '../native/cloud-stt-provider' ? { transcriptionKey: voice => `${voice.provider}:${voice.language}` } : {},
+    setTimeout(callback, ms) { const id = ++timerId; timers.set(id, { callback, ms }); return id; },
+    clearTimeout(id) { timers.delete(id); },
   });
   const host = Object.create(IosPreviewController.prototype);
   Object.assign(host, { active: true, glassesLocked: false, communicator: {}, state: { phase: 'connected' }, sessionConnected: true,
     continuousClients: new Map(), continuousPending: false, continuousCaptureToken: 0, displayReady: Promise.resolve(),
+    continuousRetryTimer: null, continuousRetryBackoff: new captureRestart.CaptureRestartBackoff(),
     glance: { dismiss() {} }, onError: message => calls.push(['error', message]), logBluetooth() {}, fail() {}, requestShellRender() {},
     syncRuntime() {}, flushBluetoothLog() {} });
   const settle = () => new Promise(resolve => setImmediate(resolve));
   // The bridge's end-of-capture callback, once a drain has finished.
-  const drained = () => { bridge.draining = false; host.syncContinuousCapture(); };
+  const drained = () => { bridge.draining = false; host.handleVoiceCaptureEnded(); };
   const session = phase => { host.state = { phase }; if (phase !== 'connected') bridge.handleSessionEnded(); host.syncContinuousSession(); };
 
   host.startContinuousVoiceCapture('transcribe', { recordAs: 'transcribe-1' }); await settle();
@@ -445,8 +457,22 @@ test('iOS continuous capture is shared by windows and restarts after a disconnec
   assert.deepEqual(calls, [['glasses', true]]);
   assert.equal(bridge.rawSession, host.communicator, 'unlocking rebinds it to the connected session');
 
-  // A failed capture is not retried in a loop, only on the next session.
+  // None of the ends above were the capture's own doing, so none was a failure to retry.
+  assert.deepEqual(waits(), []);
+  // A capture that ended by itself (the glasses refused or dropped the mic) is
+  // tried again after a wait, which grows while it keeps failing.
   calls.length = 0; bridge.source = null; drained(); await settle();
+  assert.deepEqual(calls, []);
+  assert.deepEqual(waits(), [1000]);
+  fireTimers(); await settle();
+  assert.deepEqual(calls, [['glasses', true]]);
+  calls.length = 0; bridge.source = null; drained(); await settle();
+  assert.deepEqual(waits(), [2000]);
+  // A push-to-talk capture of its own is left to finish: its end comes back to the retry.
+  bridge.draining = true; fireTimers(); await settle();
+  assert.deepEqual(calls, []);
+  drained(); await settle();
+  assert.deepEqual(waits(), [5000]);
   assert.deepEqual(calls, []);
 
   // Without glasses the phone mic stands in while in the foreground, and moves to the glasses when they connect.
@@ -464,6 +490,7 @@ test('iOS continuous capture is shared by windows and restarts after a disconnec
   // The last window closing stops it for good.
   calls.length = 0; host.stopContinuousVoiceCapture('transcribe'); drained(); session('retrying'); session('connected'); await settle();
   assert.deepEqual(calls, [['stop']]);
+  assert.deepEqual(waits(), []);
   assert.equal(bridge.recording, '');
   assert.deepEqual(claims.at(-1), [false, 'continuous-capture']);
 });

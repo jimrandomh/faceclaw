@@ -9,12 +9,27 @@ import { pcmLevel } from '../util/audio-level'
 declare const FaceclawSpeech: any
 export type IosMicrophoneSession = {
   setMicrophone(enabled: boolean, listener?: (packet: Uint8Array) => void): Promise<void>
+  /**
+   * Whether the glasses send mic packets at a steady rate while the mic is on,
+   * speech or not (a G2's mixed stream does), so that going quiet means the
+   * stream ended. Absent or false: only the first audio is waited for.
+   */
+  micStreamsContinuously?(): boolean
 }
 /** How long a cloud provider gets, after the last audio, to send its final transcript. */
 const CLOUD_FINAL_TIMEOUT_MS = 5000
 /** Retries of a failed raw-tap start (a new session's display path is usually still coming up). */
 const RAW_RETRY_MS = 3000
+/** After this many failures in a row the tap is retried at RAW_SLOW_RETRY_MS instead (docked glasses, say). */
 const RAW_RETRY_LIMIT = 5
+const RAW_SLOW_RETRY_MS = 30_000
+/**
+ * Glasses audio has to start within this of the mic enable and, on a stream
+ * that sends steadily, keep coming: the enable lives in the glasses' page, and
+ * a page that ended (docking, a firmware exit) takes it away without a word.
+ */
+const AUDIO_SILENT_MS = 5000
+const AUDIO_LOST_STATUS = 'Waiting for the glasses microphone…'
 
 /** iOS implementation of the shared voice dialog's event bridge. Audio comes
  * from the glasses when connected, or the default phone input in preview mode,
@@ -79,6 +94,8 @@ export class IosVoiceControlBridge {
   private rawGeneration = 0
   private rawFailures = 0
   private rawRetryTimer: ReturnType<typeof setTimeout> | null = null
+  private rawWatchTimer: ReturnType<typeof setTimeout> | null = null
+  private rawPackets = 0
   private rawLog: (message: string) => void = () => {}
 
   onStatus(listener: (state: VoiceControlState) => void): () => void {
@@ -147,16 +164,31 @@ export class IosVoiceControlBridge {
       })
       if (generation !== this.generation || !this.capturing) return
       log(`Voice: glasses microphone enabled; using ${this.recognition} recognition`)
-      this.audioTimer = setTimeout(() => {
-        this.audioTimer = null
-        if (generation === this.generation && this.capturing && !this.packets) {
-          this.stop(); this.setStatus('No microphone audio received. Reconnect the glasses and try again.'); this.emitEnd()
-        }
-      }, 5000)
+      this.watchAudio(generation, session, 0)
     } catch (error) {
       if (generation !== this.generation) return
       this.stop(); this.setStatus(error instanceof Error ? error.message : String(error)); this.emitEnd()
     }
+  }
+  /**
+   * End the capture when no packet came since `seen` were counted, AUDIO_SILENT_MS
+   * ago. None at all is a mic that never started. A stream that went quiet later
+   * (only told on one that sends steadily) is drained, so what it heard is kept;
+   * restarting a continuous capture is the controller's call, as ever.
+   */
+  private watchAudio(generation: number, session: IosMicrophoneSession, seen: number): void {
+    this.audioTimer = setTimeout(() => {
+      this.audioTimer = null
+      if (generation !== this.generation || !this.capturing) return
+      if (this.packets !== seen) {
+        if (session.micStreamsContinuously?.()) this.watchAudio(generation, session, this.packets)
+      } else if (!seen) {
+        this.stop(); this.setStatus('No microphone audio received. Reconnect the glasses and try again.'); this.emitEnd()
+      } else {
+        this.log('Voice: the glasses stopped sending audio')
+        void this.finalizeCapture(this.continuous ? AUDIO_LOST_STATUS : null)
+      }
+    }, AUDIO_SILENT_MS)
   }
   async startPhoneCapture(voice: VoiceProviderSelection, log: (message: string) => void, endpointing = false, continuous = false): Promise<void> {
     if (this.joinsContinuous(continuous)) return
@@ -206,6 +238,8 @@ export class IosVoiceControlBridge {
    */
   supportsContinuous(voice: VoiceProviderSelection): boolean { return usesCloudStt(voice) || speechAnalyzerSupported() }
   get continuousActive(): boolean { return this.continuous && (this.capturing || this.finalizing) }
+  /** Whether any speech capture, continuous or not, is listening or still draining. */
+  get captureActive(): boolean { return this.capturing || this.finalizing }
   /** Where a listening continuous capture gets its audio; null when none is listening. */
   get continuousSource(): 'glasses' | 'phone' | null { return this.continuous && this.capturing ? this.source : null }
   /**
@@ -266,6 +300,12 @@ export class IosVoiceControlBridge {
     this.setStatus('Recognizing…'); this.native?.finish()
     return completion
   }
+  /**
+   * The voice dialog went away: drop a push-to-talk capture of its own, with any
+   * drain still running. One that joined a continuous capture has nothing of
+   * its own; that capture belongs to its windows and goes on.
+   */
+  cancelPushToTalk(): void { if (!this.continuous) this.stop() }
   stop(): void {
     ++this.generation
     this.capturing = this.finalizing = this.continuous = false
@@ -333,12 +373,14 @@ export class IosVoiceControlBridge {
     try {
       await session.setMicrophone(true, packet => {
         if (generation !== this.rawGeneration) return
+        this.rawPackets++
         const copy = new Uint8Array(packet)
         native.acceptPacket(NSData.dataWithBytesLength(interop.handleof(copy.buffer), copy.byteLength))
       })
       if (generation !== this.rawGeneration) return
       this.rawLive = true
       this.rawLog('EvenHub mic: glasses microphone enabled')
+      if (session.micStreamsContinuously?.()) this.watchRawAudio(generation, this.rawPackets)
     } catch (failure) {
       if (generation === this.rawGeneration) this.failRawTap(failure instanceof Error ? failure.message : String(failure))
     }
@@ -362,18 +404,29 @@ export class IosVoiceControlBridge {
     }
     return this.rawNative
   }
-  /** Drop the tap and retry it shortly, a bounded number of times. */
+  /** A tap on a stream that sends steadily has failed once it goes quiet for AUDIO_SILENT_MS. */
+  private watchRawAudio(generation: number, seen: number): void {
+    this.rawWatchTimer = setTimeout(() => {
+      this.rawWatchTimer = null
+      if (generation !== this.rawGeneration) return
+      if (this.rawPackets !== seen) this.watchRawAudio(generation, this.rawPackets)
+      else this.failRawTap('no audio from the glasses')
+    }, AUDIO_SILENT_MS)
+  }
+  /** Drop the tap and retry it: shortly at first, then (it keeps failing) every RAW_SLOW_RETRY_MS. */
   private failRawTap(message: string): void {
     this.rawLog(`EvenHub mic: ${message}`)
     this.endRawTap()
-    if (++this.rawFailures >= RAW_RETRY_LIMIT) return
-    this.rawRetryTimer = setTimeout(() => { this.rawRetryTimer = null; this.syncRawTap() }, RAW_RETRY_MS)
+    const delay = ++this.rawFailures >= RAW_RETRY_LIMIT ? RAW_SLOW_RETRY_MS : RAW_RETRY_MS
+    this.rawRetryTimer = setTimeout(() => { this.rawRetryTimer = null; this.syncRawTap() }, delay)
   }
   /** Stop the tap; owners stay. Releases the mic only if the tap enabled it. */
   private endRawTap(): void {
     ++this.rawGeneration
     if (this.rawRetryTimer !== null) clearTimeout(this.rawRetryTimer)
     this.rawRetryTimer = null
+    if (this.rawWatchTimer !== null) clearTimeout(this.rawWatchTimer)
+    this.rawWatchTimer = null
     this.rawLive = false
     this.rawNative?.cancel()
     const session = this.rawHeld; this.rawHeld = null

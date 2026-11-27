@@ -1,5 +1,6 @@
 import { Utils } from "@nativescript/core";
 
+import { CaptureRestartBackoff } from "./capture-restart";
 import { type CloudSttTranscriptEvent, CloudSttClient, toJavaBytes } from "./cloud-stt";
 import { createCloudSttClient, transcriptionKey } from "./cloud-stt-provider";
 import { newRecordingPath } from "./mic-recording";
@@ -208,6 +209,16 @@ export class FaceclawVoiceControlBridge {
   // The file could not be created: one attempt per recording, not one per packet.
   private recordingFailure = false;
   private readonly recordingListeners = new Set<() => void>();
+  // The native capture this bridge started and has not stopped (0: none). One
+  // that reports it stopped while it is still this one ended by itself: the
+  // glasses refused or dropped the mic, the model is missing, the worker threw.
+  private liveCaptureId = 0;
+  // Pending restart of a capture that ended by itself; see handleCaptureDied.
+  private restartTimer: ReturnType<typeof setTimeout> | null = null;
+  private readonly restartBackoff = new CaptureRestartBackoff();
+  private restartOptions: (() => PushToTalkOptions | null) | null = null;
+  // The session the raw tap last ran on, for restarting it.
+  private rawCommunicator: any = null;
 
   onStatus(listener: (state: VoiceControlState) => void): () => void {
     this.statusListeners.add(listener);
@@ -265,6 +276,15 @@ export class FaceclawVoiceControlBridge {
     this.setStatus("Voice input couldn't start.", reason);
   }
 
+  /**
+   * Where a held capture that ended by itself gets the options to start again
+   * with: the current connection and settings, or null while there is nothing
+   * to capture from. Without one it restarts with the options it last had.
+   */
+  setRestartOptions(provider: (() => PushToTalkOptions | null) | null): void {
+    this.restartOptions = provider;
+  }
+
   /** Begin push-to-talk capture (momentary; released with stopPushToTalk). */
   startPushToTalk(options: PushToTalkOptions): void {
     this.acquireCapture("ptt", options);
@@ -279,6 +299,13 @@ export class FaceclawVoiceControlBridge {
     this.releaseCapture("ptt", true);
     return finished;
   }
+
+  /**
+   * The voice dialog went away. Nothing to do here: its stop already released
+   * the capture, and a commit still awaiting its final ends by itself. (iOS
+   * has a drain of its own to cancel.)
+   */
+  cancelPushToTalk(): void {}
 
   /** Begin continuous capture (Transcribe): the mic stays on until released. */
   startContinuousCapture(options: PushToTalkOptions): void {
@@ -476,7 +503,9 @@ export class FaceclawVoiceControlBridge {
     if (this.captureHolders.size > 0 || this.suspendedHolders.size > 0) return false;
     // A tap left over from a dead session is not something to share.
     if (this.started || this.rawActive) this.teardownCapture();
+    this.cancelRestart();
     this.suspendedRaw = false;
+    this.rawCommunicator = communicator;
     this.ensureController();
     this.controller?.setCommunicator(communicator);
     // The raw tap is strictly the G2 stream; clear any phone-mic flag a
@@ -492,10 +521,9 @@ export class FaceclawVoiceControlBridge {
     this.controller?.clearSpeakerVerification();
     this.cloudClient = null;
     this.rawActive = true;
-    this.started = true;
     // "cloud" mode decodes LC3 to PCM and emits it via onPcm without loading
     // any recognizer; with no cloudClient the frames reach only the raw tap.
-    this.controller?.start("cloud");
+    this.startNative("cloud");
     return true;
   }
 
@@ -503,8 +531,8 @@ export class FaceclawVoiceControlBridge {
     this.suspendedRaw = false;
     if (!this.rawActive) return;
     this.rawActive = false;
-    this.started = false;
-    if (global.isAndroid) this.controller?.stop();
+    this.cancelRestart();
+    this.stopNative();
   }
 
   private acquireCapture(holder: CaptureHolder, options: PushToTalkOptions): void {
@@ -526,9 +554,15 @@ export class FaceclawVoiceControlBridge {
       this.syncRecordingEnabled();
       return;
     }
+    this.startStream(options);
+  }
+
+  /** Start the capture that every current holder shares, in place of whatever was running. */
+  private startStream(options: PushToTalkOptions): void {
     // Any leftover capture is dead, or captures or transcribes otherwise than
-    // this holder needs; drop it before starting the new one.
+    // its holders need; drop it before starting the new one.
     if (this.started) this.teardownCapture();
+    this.cancelRestart();
     this.streamProvider = streamKey(options);
     this.streamOptions = options;
     this.ensureController();
@@ -578,19 +612,84 @@ export class FaceclawVoiceControlBridge {
     if (cloudClient) {
       this.cloudClient = cloudClient;
       cloudClient.start();
-      this.started = true;
-      this.controller?.start("cloud");
+      // It failed outright: handleCaptureDied has the restart in hand.
+      if (this.cloudClient !== cloudClient) return;
+      this.startNative("cloud");
       return;
     }
 
     this.cloudClient = null;
-    this.started = true;
     // Which on-device model to load; a no-op setter for every provider except
     // "onboard-whisper" (FaceclawVoiceController defaults to Moonshine).
     this.controller?.setOnboardModelKind(options.provider === "onboard-whisper" ? "whisper" : "moonshine");
+    this.startNative("onboard");
+  }
+
+  /** Start the controller on a capture of its own id, so its end can be told from an earlier one's. */
+  private startNative(mode: "cloud" | "onboard"): void {
     const captureId = this.nextNativeCaptureId++;
-    this.nativeCaptureFinished = new Promise((resolve) => { this.nativeCaptureResolvers.set(captureId, resolve); });
-    this.controller?.start("onboard", captureId);
+    this.liveCaptureId = captureId;
+    this.started = true;
+    this.restartBackoff.started(Date.now());
+    if (mode === "onboard") {
+      this.nativeCaptureFinished = new Promise((resolve) => { this.nativeCaptureResolvers.set(captureId, resolve); });
+    }
+    this.controller?.start(mode, captureId);
+  }
+
+  /** Stop the controller's capture as this bridge's own doing (not a capture that died). */
+  private stopNative(): void {
+    this.liveCaptureId = 0;
+    if (global.isAndroid) this.controller?.stop();
+    this.started = false;
+  }
+
+  /**
+   * The running capture ended without this bridge stopping it: the glasses
+   * refused or dropped the mic, the native worker gave up, or the cloud
+   * provider reported an error it does not come back from. Whoever holds the
+   * capture still wants it, so clear away what is left and start it again
+   * after a delay that grows while it keeps failing. Left as it was, the
+   * holders would stay registered on a stream that no longer exists, and
+   * push-to-talk would join it.
+   */
+  private handleCaptureDied(): void {
+    this.stopNative();
+    this.cloudClient?.stop();
+    this.cloudClient = null;
+    this.streamProvider = null;
+    // A replay that ended or could not be opened is not something to retry.
+    const sttWanted = this.captureHolders.size > 0 && !this.streamOptions?.replay;
+    const rawWanted = this.rawActive && this.rawOwners.size > 0;
+    if ((!sttWanted && !rawWanted) || this.restartTimer !== null) return;
+    const delay = this.restartBackoff.nextDelay(Date.now());
+    console.log(`Voice: capture ended by itself; starting it again in ${delay} ms`);
+    this.restartTimer = setTimeout(() => {
+      this.restartTimer = null;
+      this.restartDeadCapture();
+    }, delay);
+  }
+
+  private restartDeadCapture(): void {
+    // Something else brought the mic back in the meantime.
+    if (this.started) return;
+    if (this.captureHolders.size > 0) {
+      const options = this.restartOptions ? this.restartOptions() : this.streamOptions;
+      if (!options) {
+        // Nothing to capture from right now; look again later.
+        this.handleCaptureDied();
+        return;
+      }
+      this.startStream({ ...options, endpointing: this.captureEndpointing });
+    } else if (this.rawActive && this.rawOwners.size > 0) {
+      this.startRawTap(this.rawCommunicator);
+    }
+  }
+
+  private cancelRestart(): void {
+    if (this.restartTimer === null) return;
+    clearTimeout(this.restartTimer);
+    this.restartTimer = null;
   }
 
   /**
@@ -599,12 +698,18 @@ export class FaceclawVoiceControlBridge {
    * than failing the capture outright.
    */
   private createCloudClient(options: PushToTalkOptions): CloudSttClient | null {
-    return createCloudSttClient(options, {
+    const client: CloudSttClient | null = createCloudSttClient(options, {
       onTranscript: (event: CloudSttTranscriptEvent) =>
         this.emitTranscript(event.text, event.isFinal, event),
       onStatus: (status: string) => this.setStatus(status),
-      onError: (message: string) => this.setStatus(message),
+      onError: (message: string) => {
+        this.setStatus(message);
+        // The client has stopped itself. While it is the running capture's,
+        // nothing transcribes the audio any more.
+        if (client !== null && this.cloudClient === client) this.handleCaptureDied();
+      },
     }, () => this.captureHolders.has("continuous"));
+    return client;
   }
 
   private releaseCapture(holder: CaptureHolder, commit: boolean): void {
@@ -612,8 +717,10 @@ export class FaceclawVoiceControlBridge {
     // by the next session.
     this.suspendedHolders.delete(holder);
     if (!this.captureHolders.delete(holder)) {
-      // Never held; still finish a dangling cloud commit if one is pending.
-      if (commit) this.cloudClient?.finish();
+      // Never held; still finish a dangling cloud commit if one is pending,
+      // but not the client the remaining holders are transcribing with (it
+      // would stop itself once the commit's final came).
+      if (commit && this.captureHolders.size === 0) this.cloudClient?.finish();
       return;
     }
     this.syncRecordingEnabled();
@@ -621,14 +728,16 @@ export class FaceclawVoiceControlBridge {
       // Another holder still wants the mic; keep it running.
       return;
     }
+    // Nobody is left to bring a dead capture back for.
+    this.cancelRestart();
+    this.restartBackoff.reset();
     if (!this.started) {
       this.cloudClient?.finish();
       return;
     }
     // Order matters for cloud: stopping the Java controller flushes any final
     // decode/PCM; then commit so the provider finalizes the transcript.
-    this.controller?.stop();
-    this.started = false;
+    this.stopNative();
     if (commit) {
       this.cloudClient?.finish();
     } else {
@@ -641,6 +750,7 @@ export class FaceclawVoiceControlBridge {
     this.captureHolders.clear();
     this.suspendedHolders.clear();
     this.suspendedRaw = false;
+    this.restartBackoff.reset();
     this.syncRecordingEnabled();
     this.teardownCapture();
     this.setStatus("Voice control stopped.");
@@ -661,6 +771,8 @@ export class FaceclawVoiceControlBridge {
     this.captureHolders.clear();
     this.syncRecordingEnabled();
     this.suspendedRaw = this.rawActive;
+    // The next session is a fresh start, not another try at a failing one.
+    this.restartBackoff.reset();
     this.teardownCapture();
     if (this.suspendedHolders.size > 0) {
       this.setStatus("Waiting for the glasses...");
@@ -715,13 +827,11 @@ export class FaceclawVoiceControlBridge {
 
   /** Stop the native capture and any cloud client; leaves holders alone. */
   private teardownCapture(): void {
+    this.cancelRestart();
     this.rawActive = false;
     this.streamProvider = null;
     this.streamOptions = null;
-    if (global.isAndroid) {
-      this.controller?.stop();
-    }
-    this.started = false;
+    this.stopNative();
     this.cloudClient?.stop();
     this.cloudClient = null;
   }
@@ -746,6 +856,8 @@ export class FaceclawVoiceControlBridge {
       onStopped: (captureId: number) => {
         this.nativeCaptureResolvers.get(captureId)?.();
         this.nativeCaptureResolvers.delete(captureId);
+        // Not stopped from here, so it ended by itself.
+        if (this.liveCaptureId !== 0 && Number(captureId) === this.liveCaptureId) this.handleCaptureDied();
       },
       onPcm: (pcm: any) => {
         const bytes = toUint8Array(pcm);

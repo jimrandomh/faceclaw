@@ -427,7 +427,7 @@ export class VoiceInputLayer implements Layer {
       this.capturing = false;
       void this.actions.stopVoiceCapture();
     }
-    if (global.isIOS) voiceControlBridge.stop();
+    if (global.isIOS) voiceControlBridge.cancelPushToTalk();
     this.onClosed();
   }
 

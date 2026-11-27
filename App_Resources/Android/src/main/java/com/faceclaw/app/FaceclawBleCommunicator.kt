@@ -233,6 +233,12 @@ class FaceclawBleCommunicator(context: Context, rightAddress: String?, leftAddre
 
     fun stopG2AudioCapture() = core.stopG2AudioCapture()
 
+    /** As [stopG2AudioCapture], but only while the stream is still [owner]'s. */
+    fun stopG2AudioCapture(owner: FaceclawAudioPacketListener?) = core.stopG2AudioCapture(owner)
+
+    /** See [GlassesSessionCore.micStreamsContinuously]. */
+    fun micStreamsContinuously(): Boolean = core.micStreamsContinuously()
+
     fun isSessionReady(): Boolean = core.isSessionReady()
 
     /** See [GlassesSessionCore.requestRingHealthNow]. */
@@ -334,6 +340,9 @@ class FaceclawBleCommunicator(context: Context, rightAddress: String?, leftAddre
     fun startG2AudioForwarding(listener: FaceclawAudioPacketListener?): Boolean = core.startG2AudioForwarding(listener)
 
     fun stopG2AudioForwarding() = core.stopG2AudioForwarding()
+
+    /** As [stopG2AudioForwarding], but only while forwarding is still [owner]'s. */
+    fun stopG2AudioForwarding(owner: FaceclawAudioPacketListener?) = core.stopG2AudioForwarding(owner)
 
     fun addAudioMonitorListener(listener: FaceclawAudioPacketListener?) = core.addAudioMonitorListener(listener)
 

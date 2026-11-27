@@ -844,6 +844,11 @@ export class FaceclawCommunicatorBridge {
     return () => { this.communicator.removeAudioMonitorListenerListener(handle); };
   }
 
+  /** See GlassesSessionCore.micStreamsContinuously. */
+  micStreamsContinuously(): boolean {
+    return Boolean(this.communicator.micStreamsContinuously());
+  }
+
   /** True while Faceclaw itself is forwarding glasses audio (speech capture or an app's mic). */
   isAudioCaptureActive(): boolean {
     return Boolean(this.communicator.isAudioCaptureActive());
