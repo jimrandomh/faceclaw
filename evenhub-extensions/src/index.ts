@@ -522,6 +522,60 @@ export interface AssistantTool<Args = any> {
 }
 
 /**
+ * Options for {@link FaceclawExtensions.nativeHttpRequest}.
+ *
+ * @since apiVersion 2
+ * @group Native HTTP
+ */
+export interface NativeHttpRequestOptions {
+  /**
+   * Absolute HTTP(S) URL, without embedded credentials. HTTPS is recommended
+   * for credentials and private content. Only same-origin redirects (same
+   * scheme, host and port) are followed; HTTPS-to-HTTP is rejected.
+   */
+  url: string;
+  /** Only bodyless GET and HEAD are supported. @defaultValue "GET" */
+  method?: "GET" | "HEAD";
+  /** Request headers. Header names and values must both be strings. */
+  headers?: Record<string, string>;
+  /** Whole-call timeout in milliseconds, as a positive safe integer. @defaultValue 30000 */
+  timeoutMs?: number;
+  /** Maximum response-body bytes, from 1 through 67,108,864 (64 MiB). @defaultValue 16777216 */
+  maxBytes?: number;
+}
+
+/**
+ * Metadata for a completed native response. Its body is read separately with
+ * {@link FaceclawExtensions.nativeHttpRead}.
+ *
+ * @since apiVersion 2
+ * @group Native HTTP
+ */
+export interface NativeHttpResponse {
+  /** Opaque session-owned identifier accepted by nativeHttpRead/nativeHttpCancel. */
+  requestId: string;
+  /** HTTP status. Non-2xx statuses resolve normally and have readable bodies. */
+  status: number;
+  /** Final URL after same-origin native redirects. */
+  url: string;
+  /** Response headers in wire order; repeated fields remain separate entries. */
+  headers: Array<[string, string]>;
+}
+
+/**
+ * One base64-encoded native response-body chunk.
+ *
+ * @since apiVersion 2
+ * @group Native HTTP
+ */
+export interface NativeHttpChunk {
+  /** Base64 without line wrapping. Empty at end of body (and for an empty body). */
+  data: string;
+  /** True when this chunk reaches the end of the body. */
+  done: boolean;
+}
+
+/**
  * The Faceclaw-only capability surface, obtained with {@link getFaceclawExtensions}.
  * Everything here is in addition to the standard EvenHub SDK.
  *
@@ -532,10 +586,10 @@ export interface AssistantTool<Args = any> {
  */
 export interface FaceclawExtensions {
   /**
-   * The extension API level the host implements. It is `1` for the API
-   * described here (Faceclaw 0.8.3 and later), and increases by one each time
-   * members are added. Members added later are documented with the level that
-   * introduced them, so an app can check for them before calling:
+   * The extension API level the host implements. Level 1 is the original API
+   * (Faceclaw 0.8.3 and later); level 2 adds native HTTP. Members are
+   * documented with the level that introduced them, so an app can check for
+   * them before calling:
    *
    * ```ts
    * if (fc.apiVersion >= 2) fc.someNewerMethod();
@@ -724,6 +778,48 @@ export interface FaceclawExtensions {
    *   font.
    */
   measureText(text: string, font?: FaceclawFont): Promise<TextMeasurement>;
+
+  /**
+   * Perform a GET or HEAD through Android's native OkHttp transport, outside
+   * WebView CORS. The body is downloaded to app-private cache before this
+   * resolves; use {@link nativeHttpRead} for chunks and {@link nativeHttpCancel}
+   * to release the response when finished.
+   *
+   * Non-2xx responses resolve normally. Transport, timeout, body-size, and
+   * storage failures reject. Available on Android only. Closing the app
+   * cancels active requests and deletes all response files.
+   *
+   * Requests can reach any HTTP(S) host, including localhost/private-network
+   * services; only install hosted apps you trust with that access. Redirects
+   * are followed only within the exact same origin, preventing credentials
+   * from crossing origins or an HTTPS-to-HTTP downgrade.
+   *
+   * A session permits four concurrent downloads and retains at most eight
+   * responses. In-flight reservations plus completed bodies are limited to
+   * 64 MiB in aggregate. Cached responses expire after 24 hours without a
+   * read or request operation; later session activity reclaims them.
+   *
+   * @since apiVersion 2
+   */
+  nativeHttpRequest(options: NativeHttpRequestOptions): Promise<NativeHttpResponse>;
+
+  /**
+   * Read a response body directly at `offset`. `maxBytes` defaults to 262,144
+   * and must be a positive safe integer no greater than 1,048,576 (1 MiB).
+   * Read until `done` is true, then cancel the request to release its file.
+   * Reading refreshes the response's 24-hour retention deadline.
+   *
+   * @since apiVersion 2
+   */
+  nativeHttpRead(requestId: string, offset?: number, maxBytes?: number): Promise<NativeHttpChunk>;
+
+  /**
+   * Cancel an active request or release a completed response. Unknown IDs and
+   * repeated calls are harmless. Always call this after finishing a response.
+   *
+   * @since apiVersion 2
+   */
+  nativeHttpCancel(requestId: string): Promise<void>;
 }
 
 declare global {

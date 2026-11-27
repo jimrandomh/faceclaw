@@ -48,7 +48,7 @@ test('the shim implements exactly the members the package declares', () => {
 test('version and api level are available synchronously', () => {
   const { fc } = page();
   assert.equal(fc.getVersion(), 'Faceclaw/9.9.9');
-  assert.equal(fc.apiVersion, 1);
+  assert.equal(fc.apiVersion, 2);
 });
 
 test('calls resolve with the host value and reject with an Error', async () => {
