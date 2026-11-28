@@ -1,0 +1,12 @@
+[package]
+name = "writing"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Word suggestions and corrections for the band's handwriting: a lexicon, a word-pair model, the band's own probabilities and what the wearer teaches it"
+
+[dependencies]
+band-core = { path = "../band-core" }
+fst = "0.4"
+memmap2 = "0.9"

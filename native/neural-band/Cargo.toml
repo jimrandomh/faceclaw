@@ -1,0 +1,11 @@
+[workspace]
+resolver = "3"
+members = ["band-core", "bridge", "writing", "writing-data"]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+rust-version = "1.88"
+
+[profile.release]
+strip = true
