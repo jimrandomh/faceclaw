@@ -341,7 +341,8 @@ export class IconGrid<T> {
     if (!this.layout) return false;
     const { box, rowH, colW, lead, scrollOffset } = this.layout;
     if (x < box.x || x >= box.x + box.width || y < box.y || y >= box.y + box.height) return false;
-    const rowIndex = Math.floor((y - box.y + scrollOffset - lead) / rowH);
+    const visibleOffset = this.scrollMotion.offsetAt(scrollOffset, Date.now());
+    const rowIndex = Math.floor((y - box.y + visibleOffset - lead) / rowH);
     const row = rowIndex >= 0 ? this.buildRows()[rowIndex] : undefined;
     if (!row) return false;
     if (row.kind === "cells") {

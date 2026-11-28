@@ -79,6 +79,22 @@ test('the font picker previews under its rows where they fit, else beside them, 
   }
 });
 
+test('the font picker can open the size under the pointer and ignore the preview column', () => {
+  const size = bordered(476, 155);
+  const { layers, ctx } = stackOf(size);
+  picker.uiFontPickerMenuItem().onSelect(ctx);
+  const layer = layers[0];
+  layer.paint(ctx);
+  const top = size.padding.top + 2 + font.lineHeight + 10;
+  const y = top + 2 * metrics.listRowHeight(font) + 2;
+  assert.equal(layer.hitTest(size.width - size.padding.right - 8, y, ctx), true);
+  assert.equal(layers.length, 1);
+  assert.equal(layer.hitTest(size.padding.left + 16, y, ctx), true);
+  assert.equal(layers.length, 2);
+  assert.match(layers[1].title, /size/i);
+});
+
+
 test('a modal menu in a short window (a RayNeo iO\'s) keeps narrow margins, so four choices all show', () => {
   const items = ['Left', 'Right', 'Bottom', 'Popup'].map((label) => ({ label, onSelect() {} }));
   for (const [size, margin] of [[{ width: 576, height: 260 }, 20], [{ width: 476, height: 155 }, 8]]) {

@@ -2,7 +2,10 @@ import { EventData, Frame, Observable, View } from "@nativescript/core";
 
 import { glassesTypeSetting, type GlassesType } from "../ui/dashboard-settings";
 import { watchAppInstall } from "../native/watch-app-install";
-import { ownsRing, ownsWatch, setOwnsRing, setOwnsWatch, setPreviewOnlyMode } from "./onboarding-state";
+import {
+  ownsNeuralBand, ownsRing, ownsWatch, setOwnsNeuralBand, setOwnsRing, setOwnsWatch, setPreviewOnlyMode,
+} from "./onboarding-state";
+import { isNeuralBandAvailable } from "../native/neural-band";
 import { openWatchAppInstall, watchAppPrompt, type WatchAppPrompt } from "./watch-app-prompt";
 
 /** A row in the glasses list: a kind of glasses, or no glasses at all. */
@@ -125,6 +128,18 @@ export class OnboardingDevicesViewModel extends Observable {
     return global.isIOS ? "Apple Watch" : "Wear OS watch";
   }
 
+  get neuralBandVisibility(): "visible" | "collapse" {
+    return isNeuralBandAvailable() ? "visible" : "collapse";
+  }
+
+  get hasNeuralBand(): boolean {
+    return isNeuralBandAvailable() && ownsNeuralBand();
+  }
+
+  set hasNeuralBand(value: boolean) {
+    if (isNeuralBandAvailable()) setOwnsNeuralBand(value);
+  }
+
   // ---- installing the watch app, under the watch switch while it's on ----
 
   /** "Installed", or how to install; nothing while the switch is off or no watch is paired. */
@@ -160,7 +175,7 @@ export class OnboardingDevicesViewModel extends Observable {
     if (!this.nextEnabled) return;
     Frame.topmost()?.navigate({
       moduleName: "phone-ui/onboarding-page",
-      context: { step: 2 },
+      context: { step: this.hasNeuralBand ? "neural-band" : 2 },
     });
   }
 

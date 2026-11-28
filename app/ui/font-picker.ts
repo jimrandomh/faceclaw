@@ -229,23 +229,33 @@ export class FontPickerLayer implements Layer {
       case "scroll-down":
         void this.menu.handleInput(event);
         return;
-      case "click": {
-        const row = this.menu.selectedItem;
-        if (!row || this.rowDisabled(row)) return;
-        if (row === "face") this.openFaceMenu(ctx);
-        else if (row === "weight") this.openWeightMenu(ctx);
-        else if (row === "size") this.openSizeMenu(ctx);
-        else {
-          this.options.set(this.draftSelection());
-          ctx.stack.pop();
-        }
+      case "click":
+        this.activateRow(this.menu.selectedIndex, ctx);
         return;
-      }
       case "double-click":
         ctx.stack.pop();
         return;
       default:
         return;
+    }
+  }
+
+  hitTest(x: number, y: number, ctx: LayerContext): boolean {
+    this.activateRow(this.menu.indexAt(y, x), ctx);
+    return true;
+  }
+
+  private activateRow(index: number | null, ctx: LayerContext): void {
+    if (index === null) return;
+    const row = ROWS[index];
+    if (!row || this.rowDisabled(row)) return;
+    if (this.menu.selectedIndex !== index) this.menu.select(index);
+    if (row === "face") this.openFaceMenu(ctx);
+    else if (row === "weight") this.openWeightMenu(ctx);
+    else if (row === "size") this.openSizeMenu(ctx);
+    else {
+      this.options.set(this.draftSelection());
+      ctx.stack.pop();
     }
   }
 
@@ -346,6 +356,7 @@ export class FontPickerLayer implements Layer {
     }));
     openModalMenu(ctx, "Size", items, Math.max(0, sizes.indexOf(draft.size as (typeof FONT_SIZE_CHOICES)[number])));
   }
+
 }
 
 /** Installed fonts grouped into families (styles sorted by weight). */

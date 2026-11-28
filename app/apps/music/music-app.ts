@@ -107,6 +107,7 @@ class MusicAppLayer implements Layer {
    * page last appeared (apps installed since the cached query then show up).
    */
   private libraryAppsFresh = false;
+  private paintedPlayer: string | null = null;
   private art: GrayImage | null = null;
   /** The artVersion `art` was fetched for; -1 = not fetched yet. */
   private artVersion = -1;
@@ -121,6 +122,10 @@ class MusicAppLayer implements Layer {
     const { width, height, padding } = viewport;
     const image = new GrayImage(width, height, 0);
     const media = mediaControllerBridge.snapshot();
+    this.paintedPlayer = null;
+    this.actionsMenu.clearHitTest();
+    this.queueMenu.clearHitTest();
+    this.libraryMenu.clearHitTest();
 
     if (!media.accessEnabled) {
       // The hint line sits at the window's left and bottom padding; the
@@ -168,6 +173,7 @@ class MusicAppLayer implements Layer {
       return image;
     }
     this.libraryAppsFresh = false;
+    this.paintedPlayer = media.packageName;
 
     const artX = padding.left + ART_FRAME;
     const artY = padding.top + ART_FRAME;
@@ -258,6 +264,49 @@ class MusicAppLayer implements Layer {
     }
   }
 
+  async hitTest(x: number, y: number, ctx: LayerContext): Promise<boolean> {
+    const media = mediaControllerBridge.snapshot();
+    if (!media.accessEnabled) return false;
+    if (!media.available) {
+      const index = this.libraryMenu.indexAt(y, x);
+      if (index === null) return false;
+      const shown = this.libraryMenu.items[index];
+      const apps = mediaBrowserBridge.listBrowsableApps();
+      const app = apps[index];
+      if (!shown || !app || shown.packageName !== app.packageName || shown.serviceClass !== app.serviceClass) return false;
+      this.libraryMenu.setItems(apps, index);
+      this.pushLibraryBrowser(ctx, app);
+      return true;
+    }
+    if (this.paintedPlayer !== media.packageName) return false;
+
+    const queue = mediaControllerBridge.getQueue();
+    const actions = this.buildActions(media, queue);
+    const actionIndex = this.actionsMenu.indexAt(y, x);
+    if (actionIndex !== null) {
+      const shown = this.actionsMenu.items[actionIndex];
+      const action = actions[actionIndex];
+      if (!shown?.enabled || !action?.enabled || shown.kind !== action.kind || shown.label !== action.label ||
+        (shown.kind === "custom" && (action.kind !== "custom" || shown.action !== action.action))) return false;
+      this.reconcileSelection(actions, queue);
+      this.actionsMenu.select(actionIndex);
+      this.focusColumn = "actions";
+      await this.activateAction(action, queue, ctx);
+      return true;
+    }
+    const queueIndex = this.queueMenu.indexAt(y, x);
+    if (queueIndex === null) return false;
+    const shown = this.queueMenu.items[queueIndex];
+    const item = queue[queueIndex];
+    // Some players use a queue index as the id, so also match the rendered track.
+    if (!shown || !item || shown.id !== item.id || shown.title !== item.title || shown.subtitle !== item.subtitle) return false;
+    this.reconcileSelection(actions, queue);
+    this.queueMenu.select(queueIndex);
+    this.focusColumn = "playlist";
+    await this.activateQueueItem(item);
+    return true;
+  }
+
   async handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {
     if (event.type === "double-click" && this.focusColumn === "playlist") {
       this.focusColumn = "actions";
@@ -308,31 +357,36 @@ class MusicAppLayer implements Layer {
       case "click": {
         if (this.focusColumn === "playlist") {
           const item = this.queueMenu.selectedItem;
-          if (item) {
-            await mediaControllerBridge.skipToQueueItem(item.id);
-            // Android players rebuild the queue with the chosen track at index 0.
-            if (mediaControllerBridge.skipRebuildsQueue) this.queueMenu.select(0);
-          }
+          if (item) await this.activateQueueItem(item);
           return;
         }
         const action = this.actionsMenu.selectedItem;
-        if (!action || !action.enabled) return;
-        if (action.kind === "play-pause") await mediaControllerBridge.playPause();
-        else if (action.kind === "previous") await mediaControllerBridge.skipPrevious();
-        else if (action.kind === "next") await mediaControllerBridge.skipNext();
-        else if (action.kind === "browse") this.openBrowse(ctx);
-        else if (action.kind === "custom") await mediaControllerBridge.sendCustomAction?.(action.action);
-        else if (action.kind === "volume") {
-          ctx.stack.push(new VolumeModalLayer(mediaControllerBridge.getMediaVolumePercent()));
-        } else if (action.kind === "playlist") {
-          const activeIndex = queue.findIndex((item) => item.active);
-          if (activeIndex >= 0) this.queueMenu.select(activeIndex);
-          this.focusColumn = "playlist";
-        }
+        if (action?.enabled) await this.activateAction(action, queue, ctx);
         return;
       }
       default:
         return;
+    }
+  }
+
+  private async activateQueueItem(item: MediaQueueItem): Promise<void> {
+    await mediaControllerBridge.skipToQueueItem(item.id);
+    // Android players rebuild the queue with the chosen track at index 0.
+    if (mediaControllerBridge.skipRebuildsQueue) this.queueMenu.select(0);
+  }
+
+  private async activateAction(action: MusicAction, queue: MediaQueueItem[], ctx: LayerContext): Promise<void> {
+    if (action.kind === "play-pause") await mediaControllerBridge.playPause();
+    else if (action.kind === "previous") await mediaControllerBridge.skipPrevious();
+    else if (action.kind === "next") await mediaControllerBridge.skipNext();
+    else if (action.kind === "browse") this.openBrowse(ctx);
+    else if (action.kind === "custom") await mediaControllerBridge.sendCustomAction?.(action.action);
+    else if (action.kind === "volume") {
+      ctx.stack.push(new VolumeModalLayer(mediaControllerBridge.getMediaVolumePercent()));
+    } else if (action.kind === "playlist") {
+      const activeIndex = queue.findIndex((item) => item.active);
+      if (activeIndex >= 0) this.queueMenu.select(activeIndex);
+      this.focusColumn = "playlist";
     }
   }
 
@@ -516,6 +570,10 @@ class MusicRootLayer implements Layer {
 
   paint(ctx: LayerContext, paintBelow: PaintBelow): GrayImage {
     return this.yieldAtRoot.paint(ctx, paintBelow);
+  }
+
+  hitTest(x: number, y: number, ctx: LayerContext): Promise<boolean> {
+    return this.music.hitTest(x, y, ctx);
   }
 
   async handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {

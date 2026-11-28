@@ -148,9 +148,9 @@ export interface Layer {
    */
   readonly acceptsDirectional?: boolean;
   /**
-   * A touch at (x, y) in this layer's own canvas coordinates, from the phone's
-   * mirror view. Return true if the layer acted on it (selected / opened what
-   * is there); false sends a plain select (click) instead.
+   * A pointer click or mirror touch at (x, y) in this layer's canvas.
+   * Return true to consume it. Only an unhandled mirror touch at the base
+   * of the stack may fall back to the focused row's click.
    */
   hitTest?(x: number, y: number, ctx: LayerContext): Promise<boolean> | boolean;
   /** Called when the layer leaves the stack by any path (pop or clearToBase). */
@@ -318,16 +318,12 @@ export class LayerStack {
     await top.handleInput(delivered, this.ctx);
   }
 
-  /**
-   * Pass a mirror touch to the top layer. A stacked layer that takes no
-   * touches (a menu, a dialog) consumes it without acting: positions mean
-   * nothing to it, and falling back to a blind synthetic click would
-   * activate whatever happens to be highlighted rather than what was tapped.
-   */
+  /** Give the point only to the visible top layer. A stacked overlay owns misses too. */
   async hitTest(x: number, y: number): Promise<boolean> {
-    const top = this.layers[this.layers.length - 1]!;
-    if (!top.hitTest) return this.layers.length !== 1;
-    return await top.hitTest(x, y, this.ctx);
+    const topIndex = this.layers.length - 1;
+    const top = this.layers[topIndex]!;
+    const handled = await top.hitTest?.(x, y, this.ctx);
+    return topIndex > 0 || handled === true;
   }
 
   /** Hand text to the top layer; false if it doesn't take text input. */

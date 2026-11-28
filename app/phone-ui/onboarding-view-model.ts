@@ -1,11 +1,12 @@
 import { Frame, Observable, Screen } from "@nativescript/core";
 import { EVEN_G1_RESTORE } from "../g1/even-firmware";
+import { isNeuralBandAvailable, openNeuralBandSettings } from "../native/neural-band";
 import { glassesTypeSetting, type GlassesType } from "../ui/dashboard-settings";
 
 import { isPreviewOnlyMode } from "./onboarding-state";
 
 /** Steps are separate pages in the flow; the devices page follows the splash. */
-type OnboardingStep = 1 | 2 | 3;
+export type OnboardingStep = 1 | "neural-band" | 2 | 3;
 
 type StepContent = {
   headline: string;
@@ -57,6 +58,16 @@ function stepContent(step: OnboardingStep, glasses: GlassesType, previewOnly: bo
         splash: true,
         showSecondary: false,
       };
+    case "neural-band":
+      return {
+        headline: "Meta Neural Band",
+        tagline: "",
+        body: "Import your Meta Neural Band pairing from Air Gestures now or set it up later in Settings.",
+        primaryLabel: "Continue",
+        secondaryLabel: "Back",
+        splash: false,
+        showSecondary: true,
+      };
     case 2:
       return {
         headline: "Before You Continue",
@@ -84,15 +95,21 @@ export class OnboardingViewModel extends Observable {
   private readonly step: OnboardingStep;
   private readonly content: StepContent;
 
-  constructor(initialStep?: number) {
+  constructor(initialStep?: OnboardingStep) {
     super();
-    this.step = initialStep === 2 || initialStep === 3 ? initialStep : 1;
+    this.step = initialStep === 2 || initialStep === 3 || (initialStep === "neural-band" && isNeuralBandAvailable())
+      ? initialStep
+      : 1;
     this.content = stepContent(this.step, glassesTypeSetting.get(), isPreviewOnlyMode());
   }
 
   onPrimaryTap(): void {
     if (this.step === 1) {
       Frame.topmost()?.navigate({ moduleName: "phone-ui/onboarding-devices-page" });
+      return;
+    }
+    if (this.step === "neural-band") {
+      Frame.topmost()?.navigate({ moduleName: "phone-ui/onboarding-page", context: { step: 2 } });
       return;
     }
     if (this.step === 2) {
@@ -119,6 +136,10 @@ export class OnboardingViewModel extends Observable {
     this.openDocument("PRIVACY", "Privacy Policy");
   }
 
+  onNeuralBandSetupTap(): void {
+    if (this.step === "neural-band") openNeuralBandSettings();
+  }
+
   private openDocument(fileName: string, title: string): void {
     Frame.topmost()?.navigate({
       moduleName: "phone-ui/document-page",
@@ -126,7 +147,7 @@ export class OnboardingViewModel extends Observable {
     });
   }
 
-  /** Back, on the disclaimer and firmware steps. */
+  /** Back on each page after the splash. */
   onSecondaryTap(): void {
     const frame = Frame.topmost();
     if (frame?.canGoBack()) {
@@ -185,5 +206,9 @@ export class OnboardingViewModel extends Observable {
   /** License and privacy-policy links, shown only under the disclaimer step. */
   get footerVisibility(): "visible" | "collapse" {
     return this.step === 2 ? "visible" : "collapse";
+  }
+
+  get neuralBandSetupVisibility(): "visible" | "collapse" {
+    return this.step === "neural-band" ? "visible" : "collapse";
   }
 }

@@ -519,7 +519,10 @@ export class MenuLayer implements Layer {
       image.drawText(font, x + MENU_ROW_TEXT_INSET, footerY, footerText(layout.footer), 110);
       bottom = fixedBottom = footerY - MENU_FOOTER_GAP;
     }
-    if (bottom <= top) return image;
+    if (bottom <= top || rowsWidth <= 0) {
+      this.menu.clearHitTest();
+      return image;
+    }
     this.paintCtx = ctx;
     try {
       this.menu.paint(image, { x, y: top, width: rowsWidth, height: bottom - top, padTop: fixedTop - top, padBottom: bottom - fixedBottom },
@@ -536,17 +539,27 @@ export class MenuLayer implements Layer {
       case "double-click":
         ctx.stack.pop();
         return;
-      case "click": {
-        const item = this.menu.selectedItem;
-        if (item && !isMenuItemDisabled(item)) {
-          await item.onSelect(ctx, this);
-        }
+      case "click":
+        await this.activateRow(this.menu.selectedIndex, ctx);
         return;
-      }
       default:
         await this.menu.handleInput(event);
         return;
     }
+  }
+
+  async hitTest(x: number, y: number, ctx: LayerContext): Promise<boolean> {
+    await this.activateRow(this.menu.indexAt(y, x), ctx);
+    // A tap on the heading, spacer or background still belongs to this menu.
+    return true;
+  }
+
+  private async activateRow(index: number | null, ctx: LayerContext): Promise<void> {
+    if (index === null) return;
+    const item = this.items[index];
+    if (!item || isMenuItemDisabled(item)) return;
+    if (this.menu.selectedIndex !== index) this.menu.select(index);
+    await item.onSelect(ctx, this);
   }
 }
 

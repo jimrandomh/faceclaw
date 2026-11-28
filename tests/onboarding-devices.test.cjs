@@ -13,10 +13,10 @@ function load(file, modules, globals) {
   return context.exports;
 }
 
-function fixture({ glasses = 'g2', ios = false, completed = false, ring = false, watch = false, previewOnly = false,
+function fixture({ glasses = 'g2', ios = false, completed = false, ring = false, watch = false, band = false, bandAvailable = !ios, previewOnly = false,
   watchApp = 'unknown', watchAppSource = 'watch-app' } = {}) {
-  const state = { glasses, ring, watch, navigations: [], backs: 0, previewOnly, completed,
-    watchApp, watchAppSource, watchAppListeners: new Set(), watchAppOpened: 0, changes: [] };
+  const state = { glasses, ring, watch, band, navigations: [], backs: 0, previewOnly, completed,
+    watchApp, watchAppSource, watchAppListeners: new Set(), watchAppOpened: 0, bandSetupOpened: 0, changes: [] };
   const frame = { navigate: entry => state.navigations.push(entry), goBack: () => { state.backs++; }, canGoBack: () => true, backStack: [] };
   class Observable { notifyPropertyChange(name) { state.changes.push(name); } }
   const core = {
@@ -29,6 +29,7 @@ function fixture({ glasses = 'g2', ios = false, completed = false, ring = false,
     isPreviewOnlyMode: () => state.previewOnly, setPreviewOnlyMode: value => { state.previewOnly = value; },
     ownsRing: () => state.ring, setOwnsRing: value => { state.ring = value; },
     ownsWatch: () => state.watch, setOwnsWatch: value => { state.watch = value; },
+    ownsNeuralBand: () => state.band, setOwnsNeuralBand: value => { state.band = value; },
   };
   const settings = { glassesTypeSetting: { get: () => state.glasses, set: value => { state.glasses = value; } } };
   const globals = { global: { isIOS: ios, isAndroid: !ios } };
@@ -39,6 +40,7 @@ function fixture({ glasses = 'g2', ios = false, completed = false, ring = false,
   };
   const modules = {
     '../native/watch-app-install': { watchAppInstall },
+    '../native/neural-band': { isNeuralBandAvailable: () => bandAvailable, openNeuralBandSettings: () => { state.bandSetupOpened++; } },
     '@nativescript/core': core, './onboarding-state': onboardingState, '../ui/dashboard-settings': settings,
     './onboarding-navigation': { finishOnboardingNavigation: () => state.navigations.push('finish') },
     '../g1/even-firmware': { EVEN_G1_RESTORE: { version: '1.6.6' } },
@@ -70,6 +72,99 @@ function fixture({ glasses = 'g2', ios = false, completed = false, ring = false,
 const rowFor = (model, choice) => model.glassesOptions.find(option => option.choice === choice);
 const selected = model => model.glassesOptions.filter(option => option.checkVisibility === 'visible').map(option => option.choice).join();
 const tap = (model, type) => model.onGlassesRowTap({ object: { bindingContext: rowFor(model, type) } });
+
+test('Android selects Neural Band as an accessory and opens pairing only from its setup step', () => {
+  const { state, loadPage } = fixture();
+  const { OnboardingDevicesViewModel } = loadPage('onboarding-devices-view-model');
+  const { OnboardingViewModel } = loadPage('onboarding-view-model');
+  const devices = new OnboardingDevicesViewModel();
+  assert.equal(devices.neuralBandVisibility, 'visible');
+  assert.equal(devices.hasNeuralBand, false);
+  devices.hasNeuralBand = true;
+  assert.equal(state.band, true);
+  assert.equal(new OnboardingDevicesViewModel().hasNeuralBand, true);
+  devices.onNextTap();
+  assert.deepEqual(state.navigations, [], 'Next still requires a glasses choice');
+  tap(devices, 'g2');
+  assert.equal(state.bandSetupOpened, 0);
+  devices.onNextTap();
+  const next = state.navigations.pop();
+  assert.equal(next.moduleName, 'phone-ui/onboarding-page');
+  assert.equal(next.context.step, 'neural-band');
+  const setup = new OnboardingViewModel(next.context.step);
+  assert.equal(setup.headline, 'Meta Neural Band');
+  assert.equal(setup.neuralBandSetupVisibility, 'visible');
+  assert.equal(state.bandSetupOpened, 0, 'opening the step does not start pairing automatically');
+
+  setup.onNeuralBandSetupTap();
+  assert.equal(state.bandSetupOpened, 1);
+  assert.equal(state.glasses, 'g2');
+  assert.equal(state.previewOnly, false);
+  assert.equal(selected(devices), 'g2');
+  assert.deepEqual(state.navigations, []);
+  assert.match(fs.readFileSync('app/phone-ui/onboarding-devices-page.xml', 'utf8'),
+    /text="Meta Neural Band"[^>]*>\s*<Switch[^>]*checked="{{ hasNeuralBand }}"/);
+  assert.match(fs.readFileSync('app/phone-ui/onboarding-page.xml', 'utf8'),
+    /tap="{{ onNeuralBandSetupTap }}"[^>]*visibility="{{ neuralBandSetupVisibility }}"/);
+});
+
+test('Neural Band setup can be skipped without changing Preview Only or the firmware route', () => {
+  for (const [choice, previewOnly] of [['preview', true], ['g1', false], ['g2', false]]) {
+    const { state, loadPage } = fixture({ band: true });
+    const { OnboardingDevicesViewModel } = loadPage('onboarding-devices-view-model');
+    const { OnboardingViewModel } = loadPage('onboarding-view-model');
+    const devices = new OnboardingDevicesViewModel();
+    tap(devices, choice);
+    devices.onNextTap();
+    const setup = new OnboardingViewModel(state.navigations.pop().context.step);
+    assert.equal(setup.secondaryLabel, 'Back');
+    setup.onSecondaryTap();
+    assert.equal(state.backs, 1);
+    assert.equal(selected(devices), choice);
+    assert.equal(devices.hasNeuralBand, true);
+    devices.onNextTap();
+    state.navigations.pop();
+    assert.equal(setup.primaryLabel, 'Continue');
+    setup.onPrimaryTap();
+    const disclaimer = state.navigations.pop();
+    assert.equal(disclaimer.moduleName, 'phone-ui/onboarding-page');
+    assert.equal(disclaimer.context.step, 2);
+    assert.equal(state.bandSetupOpened, 0);
+    assert.equal(state.previewOnly, previewOnly);
+    if (!previewOnly) assert.equal(state.glasses, choice);
+
+    devices.hasNeuralBand = false;
+    devices.onNextTap();
+    assert.equal(state.navigations.pop().context.step, 2);
+  }
+});
+
+test('iOS hides the Neural Band accessory and stays on the standard onboarding route', () => {
+  const ios = fixture({ ios: true, band: true });
+  const { OnboardingDevicesViewModel } = ios.loadPage('onboarding-devices-view-model');
+  const { OnboardingViewModel } = ios.loadPage('onboarding-view-model');
+  const devices = new OnboardingDevicesViewModel();
+  assert.equal(devices.neuralBandVisibility, 'collapse');
+  assert.equal(devices.hasNeuralBand, false);
+  tap(devices, 'g2');
+  devices.onNextTap();
+  assert.equal(ios.state.navigations.pop().context.step, 2);
+  const setup = new OnboardingViewModel('neural-band');
+  assert.equal(setup.neuralBandSetupVisibility, 'collapse');
+  setup.onNeuralBandSetupTap();
+  assert.equal(ios.state.bandSetupOpened, 0);
+});
+
+test('Android builds without the optional Band driver skip Band setup', () => {
+  const { loadPage, state } = fixture({ band: true, bandAvailable: false });
+  const { OnboardingDevicesViewModel } = loadPage('onboarding-devices-view-model');
+  const devices = new OnboardingDevicesViewModel();
+  assert.equal(devices.neuralBandVisibility, 'collapse');
+  assert.equal(devices.hasNeuralBand, false);
+  tap(devices, 'g2');
+  devices.onNextTap();
+  assert.equal(state.navigations.pop().context.step, 2);
+});
 
 test('the devices page sits between the splash and the disclaimer', () => {
   const { state, loadPage } = fixture();

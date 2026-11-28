@@ -7,9 +7,12 @@ function fixture({ choose } = {}) {
   const Dialogs = { action: async options => { dialogs.push(options); return choose ? choose(options.actions) : options.cancelButtonText; } };
   const { KeyboardInputViewModel } = loader({ setTimeout: callback => callback() },
     { '@nativescript/core': { Observable, Dialogs } })('app/phone-ui/keyboard-input-view-model.ts');
-  const model = new KeyboardInputViewModel(), sent = [], text = [], visibilities = [];
+  const model = new KeyboardInputViewModel(), sent = [], text = [], visibilities = [], textListeners = new Set();
   const session = { targets: [{ id: 'assistant', label: 'Send to Assistant' }, { id: 'app', label: 'Type Into App' }],
-    setText: value => text.push(value), sendTo: id => sent.push(id), discard: () => model.setSession(null),
+    getText: () => text.at(-1) ?? '',
+    setText: value => { text.push(value); for (const listen of textListeners) listen(value); },
+    onTextChanged: listener => { textListeners.add(listener); return () => textListeners.delete(listener); },
+    sendTo: id => sent.push(id), discard: () => model.setSession(null),
     visibility: 'both', setVisibility(value) { visibilities.push(value); this.visibility = value; },
     history: [] };
   model.setSession(session);
@@ -26,6 +29,18 @@ test('multiline keyboard editor routes Assistant and App buttons to distinct she
   h.model.onKeyboardInputSecondarySendTap();
   assert.deepEqual(h.sent, ['assistant', 'app']);
   assert.equal(h.text.at(-1), 'First line\nSecond line');
+});
+test('handwritten draft changes reach the phone editor and wait for explicit send', () => {
+  const h = fixture();
+  const { layer, events } = layerFixture();
+  h.model.setSession(layer);
+  h.model.keyboardInputText = 'Draft';
+  assert.equal(layer.getText(), 'Draft');
+  layer.setText('Draft aggiornato');
+  assert.equal(h.model.keyboardInputText, 'Draft aggiornato');
+  assert.deepEqual(events, []);
+  h.model.onKeyboardInputPrimarySendTap();
+  assert.deepEqual(events, ['closed', 'sent:Draft aggiornato']);
 });
 test('discard and shell-side closure reset the editor; unsupported destinations stay hidden', () => {
   const h = fixture();

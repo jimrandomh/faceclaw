@@ -297,6 +297,24 @@ test('ring: row mode, then item mode at the middle column, linear traversal, bac
   assert.equal(log.backs, 1, 'double-click in row mode backs out');
 });
 
+test('Neural Band scroll selects a launcher row, then walks the apps in that row', async () => {
+  const { grid, log } = makeGrid();
+  const band = (type) => ({ type, source: 'neural-band' });
+  grid.onFocus(band('click'));
+
+  await grid.handleInput(band('scroll-down'), null);
+  assert.equal(grid.cursorIndex, 5, 'the second row is highlighted');
+  assert.equal(grid.selectedItem, null);
+  await grid.handleInput(band('click'), null);
+  assert.equal(grid.selectedItem, 'item7', 'the first pinch enters the selected row');
+  assert.deepEqual(log.activated, []);
+
+  await grid.handleInput(band('scroll-up'), null);
+  assert.equal(grid.selectedItem, 'item6');
+  await grid.handleInput(band('click'), null);
+  assert.deepEqual(log.activated, [{ item: 'item6', index: 6 }]);
+});
+
 test('watch: four-way cells, left from the first column backs out and stays in item mode', async () => {
   const { grid, log, data } = makeGrid({
     onBack: () => { log.backs++; grid.resetSelection(); return false; },
@@ -407,4 +425,16 @@ test('a grid painted at rest shows no motion and forgets the one it had', async 
   });
   assert.equal(animation(resting), undefined);
   assert.equal(animation(paint(grid, 2010)), undefined, 'the slide does not resume afterwards');
+});
+
+test('hitTest in a moving app grid uses the row still on screen at the start of the motion', async () => {
+  const { grid, log } = makeGrid({ items: Array.from({ length: 15 }, (_, i) => `item${i}`) });
+  paint(grid, 500);
+  await grid.handleInput(ring('scroll-down'), null);
+  paint(grid, 1000);
+  paint(grid, 2000);
+  await grid.handleInput(ring('scroll-down'), null);
+  assert.ok(animation(paint(grid, 3000)));
+  assert.equal(await withClock(3000, () => grid.hitTest(50, BOX.y + 5, null)), true);
+  assert.deepEqual(log.activated, [{ item: 'item0', index: 0 }]);
 });

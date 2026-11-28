@@ -11,6 +11,7 @@ import {
 import { formatBatteryLine } from '../g2/glasses-display-state';
 import { getGlassesPresence, onGlassesPresenceChanged } from '../g2/glasses-presence';
 import { shell } from '../ui/shell/shell';
+import { isNeuralBandAvailable, openNeuralBandSettings } from '../native/neural-band';
 import { watchAppInstall } from '../native/watch-app-install';
 import { openWatchAppInstall, watchAppPrompt, type WatchAppPrompt } from './watch-app-prompt';
 
@@ -165,6 +166,14 @@ export class SettingsViewModel extends Observable {
     this.notifyPropertyChange("watchStyleClass", this.watchStyleClass);
     this.notifyPropertyChange("ringStyleClass", this.ringStyleClass);
     this.notifyPropertyChange("phoneInputStyleHint", this.phoneInputStyleHint);
+  }
+
+  get neuralBandRowVisibility(): "visible" | "collapse" {
+    return isNeuralBandAvailable() ? "visible" : "collapse";
+  }
+
+  onNeuralBandSettingsTap(): void {
+    openNeuralBandSettings();
   }
 
   // ---- Apple Watch app (iOS; the row stays collapsed on Android) ----

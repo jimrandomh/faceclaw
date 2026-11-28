@@ -133,6 +133,7 @@ type SingleNotificationLayerOptions = {
  */
 export class NotificationsListLayer implements Layer {
   private selectedKey = "";
+  private visibleCards: { key: string; left: number; right: number; top: number; bottom: number }[] = [];
 
   paint(ctx: LayerContext): GrayImage {
     const font = getDefaultSmallFont();
@@ -145,6 +146,7 @@ export class NotificationsListLayer implements Layer {
     const titleX = cardX + TITLE_INSET_X;
     const titleY = padding.top + TITLE_OFFSET_Y;
     const notifications = readActiveNotifications(MAX_NOTIFICATIONS);
+    this.visibleCards = [];
     const selectedIndex = this.resolveSelectedIndex(notifications);
     const layouts = notifications.map((notification, index) =>
       buildNotificationCardLayout(font, notification, index === selectedIndex, cardTextWidth),
@@ -178,6 +180,8 @@ export class NotificationsListLayer implements Layer {
     for (let index = 0; index < layouts.length; index++) {
       const layout = layouts[index]!;
       if (cursorY + layout.height > 0 && cursorY < height) {
+        this.visibleCards.push({ key: layout.notification.key, left: cardX, right: cardX + cardWidth,
+          top: Math.max(0, cursorY), bottom: Math.min(height, cursorY + layout.height) });
         // Icons are only resolved for cards actually drawn, so a long list
         // does not fetch icons for everything below the fold.
         const icon = iconForNotification(layout.notification.key);
@@ -211,10 +215,22 @@ export class NotificationsListLayer implements Layer {
       return;
     }
     if (event.type === "click") {
-      ctx.stack.push(new SingleNotificationLayer(notifications[selectedIndex]!.key, {
-        origin: "notifications-list",
-      }));
+      this.openNotification(notifications[selectedIndex]!.key, ctx);
     }
+  }
+
+  hitTest(x: number, y: number, ctx: LayerContext): boolean {
+    const card = this.visibleCards.find(({ left, right, top, bottom }) =>
+      x >= left && x < right && y >= top && y < bottom);
+    if (card && readActiveNotifications(ALL_NOTIFICATIONS).some(({ key }) => key === card.key)) {
+      this.openNotification(card.key, ctx);
+    }
+    return true;
+  }
+
+  private openNotification(key: string, ctx: LayerContext): void {
+    this.selectedKey = key;
+    ctx.stack.push(new SingleNotificationLayer(key, { origin: "notifications-list" }));
   }
 
   private resolveSelectedIndex(notifications: AndroidNotification[]): number {
@@ -300,7 +316,36 @@ export class SingleNotificationLayer implements Layer {
 
     // "(unavailable)" actions stay clickable: Android decides whether they do anything.
     const item = this.detailMenu.selectedItem;
-    if (!item) return;
+    if (item) this.activateDetailItem(item, notification, ctx);
+  }
+
+  hitTest(x: number, y: number, ctx: LayerContext): boolean {
+    const confirmation = this.confirmation;
+    if (confirmation) {
+      const index = confirmation.menu.indexAt(y, x);
+      if (index !== null) confirmation.menu.items[index]?.run(ctx);
+      return true;
+    }
+    const index = this.detailMenu.indexAt(y, x);
+    if (index === null) return true;
+    const item = this.detailMenu.items[index]!;
+    const notification = readActiveNotifications(ALL_NOTIFICATIONS).find(({ key }) => key === this.notificationKey);
+    if (!notification) {
+      this.closeUnavailableNotification(ctx);
+      return true;
+    }
+    // An action index can be reused while a notification updates. Use it
+    // only while it still describes the action present in the painted row.
+    if (item.kind === "action" && !notification.actions.some((action) =>
+      action.index === item.action.index && action.title === item.action.title && action.enabled === item.action.enabled)) {
+      return true;
+    }
+    this.detailMenu.select(index);
+    this.activateDetailItem(item, notification, ctx);
+    return true;
+  }
+
+  private activateDetailItem(item: DetailMenuItem, notification: AndroidNotification, ctx: LayerContext): void {
     if (item.kind === "back") {
       this.close(ctx);
     } else if (item.kind === "action") {

@@ -24,6 +24,7 @@
     "../app/g2/keyboard/bindings.ts",
     "../app/g2/keyboard/key-router.ts",
     "../app/g2/keyboard/pointer.ts",
+    "../app/g2/neural-band-modalities.ts",
     "../app/apps/terminal/terminal-keys.ts",
     "../app/native/terminal-session-types.ts",
     "../app/native/java-call-queue.ts",

@@ -88,6 +88,8 @@ function ui(fontSize = 12) {
   let active = [{ ...mail, key: 'key', title: 'Message', text: 'Hello', bigText: '', lines: [], actions: [], postTime: 0 }];
   let dismissals = 0;
   let closes = 0;
+  const invoked = [];
+  const opened = [];
   const textwrap = load('app/graphics/textwrap.ts');
   const graphics = require('../.test-build/app/graphics/image.js');
   const { BdfFont } = load('app/graphics/bdffont.ts', () => ({}));
@@ -103,6 +105,7 @@ function ui(fontSize = 12) {
     ALL_NOTIFICATIONS: 0x7fffffff,
     readActiveNotifications: () => { prefs.rememberNotificationSources(active); return active; },
     dismissNotification: () => { dismissals++; active = []; return true; },
+    invokeNotificationAction: (key, index) => { invoked.push([key, index]); },
     readNotificationIconByKey: () => ({ icon: null, stale: false }),
   };
   const dependencies = {
@@ -128,9 +131,10 @@ function ui(fontSize = 12) {
   };
   dependencies['./menu-core'] = load('app/ui/menu-core.ts', requireModule);
   dependencies['./menu'] = load('app/ui/menu.ts', requireModule);
-  const { SingleNotificationLayer } = load('app/ui/notifications.ts', requireModule);
+  const { NotificationsListLayer, SingleNotificationLayer } = load('app/ui/notifications.ts', requireModule);
   const { NotificationFilterLayer } = load('app/ui/notification-filter.ts', requireModule);
-  const ctx = { stack: { getBaseSize: () => bordered(540, 224), isFocused: () => true, pop: () => closes++ } };
+  const ctx = { stack: { getBaseSize: () => bordered(540, 224), isFocused: () => true,
+    pop: () => closes++, push: (layer) => opened.push(layer) } };
   const popup = new SingleNotificationLayer('key', { origin: 'new-notification-modal', onClose: () => closes++ });
   const trayCloses = [];
   const tray = new SingleNotificationLayer('key', { origin: 'notification-tray', onClose: (_ctx, gone) => trayCloses.push(gone) });
@@ -138,9 +142,78 @@ function ui(fontSize = 12) {
   let paintedBelow = 0;
   const paint = (layer) => layer.paint(ctx, () => { paintedBelow++; return new RecordingImage(540, 224); });
   const input = (layer, type) => layer.handleInput({ type }, ctx);
-  return { prefs, popup, tray, filter, paint, input, active: (value) => { active = value; },
+  return { prefs, popup, tray, filter, paint, input, point: (x, y) => filter.hitTest(x, y, ctx), active: (value) => { active = value; },
+    list: new NotificationsListLayer(), tap: (layer, x, y) => layer.hitTest(x, y, ctx), opened, invoked,
     dismissals: () => dismissals, closes: () => closes, trayCloses, paintedBelow: () => paintedBelow };
 }
+
+const notification = (key, title, actions = []) => ({
+  ...mail, key, title, text: 'Hello', bigText: '', lines: [], actions, postTime: 0,
+});
+
+test('a notification card click opens the visible key even when the underlying list reorders', async () => {
+  const app = ui();
+  const first = notification('first', 'First'), second = notification('second', 'Second');
+  app.active([first, second]);
+  const row = app.paint(app.list).texts.find(({ text }) => text === 'Second');
+  app.active([second, first]);
+  assert.equal(await app.tap(app.list, 0, row.y), true);
+  assert.equal(app.opened.length, 0);
+  assert.equal(await app.tap(app.list, row.x, row.y), true);
+  assert.equal(app.opened.length, 1);
+  assert.ok(app.paint(app.opened[0]).texts.some(({ text }) => text === 'Second'));
+});
+
+test('a notification action click only invokes the action painted under the pointer', async () => {
+  const app = ui();
+  const archive = { index: 1, title: 'Archive', enabled: true };
+  const current = notification('key', 'Message', [archive]);
+  app.active([current]);
+  const row = app.paint(app.popup).texts.find(({ text }) => text === 'Archive');
+  assert.equal(await app.tap(app.popup, 20, row.y), true);
+  assert.deepEqual(app.invoked, []);
+  assert.equal(await app.tap(app.popup, row.x, row.y), true);
+  assert.deepEqual(app.invoked, [['key', 1]]);
+  app.active([{ ...current, actions: [{ ...archive, title: 'Delete' }] }]);
+  assert.equal(await app.tap(app.popup, row.x, row.y), true);
+  assert.deepEqual(app.invoked, [['key', 1]]);
+  assert.equal(app.dismissals(), 0);
+});
+
+test('a framed popup forwards only points inside its painted content in local coordinates', async () => {
+  const graphics = require('../.test-build/app/graphics/image.js');
+  const planes = require('../.test-build/app/graphics/plane.js');
+  const viewport = require('../.test-build/app/ui/viewport.js');
+  const layers = load('app/ui/layers.ts', (name) => ({
+    '../graphics/image': graphics, '../graphics/plane': planes,
+    '../native/frame-timings': { spanCurrent: (_name, fn) => fn() },
+    '../graphics/screen-size': { screenWidth: () => 200, screenHeight: () => 200 },
+    './gestures': {}, './viewport': viewport,
+  })[name]);
+  let top = 20;
+  const { ShellModalLayer } = load('app/ui/shell/modal-layer.ts', (name) => ({
+    '../../graphics/image': graphics, '../../graphics/plane': planes, '../layers': layers, '../viewport': viewport,
+    './geometry': { appViewportSize: () => ({ width: 120, height: 110 }),
+      appViewportRect: () => ({ x: 10, y: top, width: 120, height: 110 }), SHELL_OPAQUE_BLACK: 1 },
+  })[name]);
+  const points = [];
+  let interactions = 0;
+  const modal = new ShellModalLayer({
+    paint: (ctx) => new graphics.GrayImage(ctx.stack.getBaseSize().width, ctx.stack.getBaseSize().height, 0),
+    hitTest: (x, y) => { points.push([x, y]); return true; },
+  }, layers.noopLayerActions, { input: () => interactions++ });
+  const paint = () => modal.paint({}, () => new graphics.GrayImage(200, 200, 0));
+  paint();
+  top = 50;
+  assert.equal(await modal.hitTest(24, 40), true, 'the border absorbs the point');
+  assert.equal(await modal.hitTest(112, 38), true, 'the right edge is outside the content');
+  assert.equal(await modal.hitTest(50, 42), true);
+  assert.deepEqual(points, [[22, 4]], 'the last visible frame owns the point');
+  paint();
+  assert.equal(await modal.hitTest(50, 78), true);
+  assert.deepEqual(points, [[22, 4], [22, 10]]);
+  assert.equal(interactions, 2);
+});
 
 test('a notification the switcher selected reports back and dismissal to it, and repeats its last frame once gone', async () => {
   const app = ui();
@@ -206,6 +279,15 @@ test('filter toggles persist after notifications disappear and discovers new sou
   // A source inserted before the selection must not move the toggle to another app.
   await app.input(app.filter, 'click');
   assert.equal(app.prefs.shouldShowNotificationOnGlasses(mail.packageName), true);
+  assert.equal(app.prefs.shouldShowNotificationOnGlasses('com.alpha'), true);
+});
+
+test('a filter pointer tap toggles the package shown in the frame even as sources arrive', async () => {
+  const app = ui();
+  const mailRow = app.paint(app.filter).texts.find(({ text }) => text === 'Mail');
+  app.active([{ packageName: 'com.alpha', appName: 'Alpha' }]);
+  assert.equal(await app.point(mailRow.x, mailRow.y), true);
+  assert.equal(app.prefs.shouldShowNotificationOnGlasses(mail.packageName), false);
   assert.equal(app.prefs.shouldShowNotificationOnGlasses('com.alpha'), true);
 });
 

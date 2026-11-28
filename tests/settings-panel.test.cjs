@@ -29,7 +29,7 @@ const menu = load('app/ui/menu.ts', {
   './metrics': metrics, './menu-core': menuCore,
 });
 let yields = 0;
-const { SettingsPanelLayer } = load('app/ui/dashboard/settings-panel.ts', {
+const { SettingsPanelLayer, SettingsDescriptionOverlayLayer } = load('app/ui/dashboard/settings-panel.ts', {
   '../../graphics/ui-fonts': fonts, '../../graphics/image': graphics, '../../graphics/textwrap': textwrap,
   '../gestures': {}, '../layers': {}, '../menu': menu, '../menu-core': menuCore, '../metrics': metrics,
   '../shell/shell': { shell: { yieldFocusToSidebar: () => yields++ } },
@@ -46,10 +46,50 @@ function panel(viewport = bordered(576, 260)) {
   ]);
   const ctx = { stack: { getBaseSize: () => viewport, isFocused: () => true } };
   const input = (type) => layer.handleInput({ type, timestampMs: 0 }, ctx);
-  return { layer, input, paint: () => layer.paint(ctx), selected };
+  const overlay = new SettingsDescriptionOverlayLayer(layer);
+  return { layer, input, paint: () => layer.paint(ctx), selected, point: (x, y) => overlay.hitTest(x, y, ctx) };
 }
 
 const selections = (image) => image.draws.filter((d) => d.kind === 'image' && d.presentation);
+
+test('coordinate taps through the description overlay choose the visible Settings column and row', async () => {
+  const p = panel();
+  const rowY = (row) => 8 + row * metrics.listRowHeight(font) + 5;
+  assert.equal(await p.point(300, rowY(1)), false, 'no frame has been drawn');
+  p.paint();
+  assert.equal(await p.point(166, rowY(0)), false, 'divider is not a row');
+  assert.equal(await p.point(300, rowY(2)), false, 'disabled row cannot be selected');
+  assert.deepEqual(p.selected, []);
+  assert.equal(await p.point(300, rowY(1)), true);
+  assert.deepEqual(p.selected, ['Font'], 'directly activates the second right-column row');
+  assert.equal(await p.point(48, rowY(1)), true, 'switches to the Voice column');
+  assert.equal(await p.point(300, rowY(1)), false, 'old right rows cannot act under a new section');
+  p.paint();
+  assert.equal(await p.point(300, rowY(2)), true);
+  p.paint();
+  assert.deepEqual(p.selected, ['Font', 'Voice 2']);
+  assert.equal(await p.point(300, 247), false, 'the description band is not a row');
+});
+
+test('coordinate taps reject removed settings rows and hidden sections from an older frame', async () => {
+  let offered = true, hidden = false;
+  const selected = [], row = (label) => ({ label, onSelect: () => selected.push(label) });
+  const layer = new SettingsPanelLayer([
+    { label: 'Watch', get items() { return [...(offered ? [row('Install')] : []), row('Remote')]; } },
+    { label: 'About', items: [row('License')], hidden: () => hidden },
+  ]);
+  const ctx = { stack: { getBaseSize: () => bordered(576, 260), isFocused: () => true } };
+  const point = (x, y) => layer.hitTest(x, y, ctx);
+  layer.paint(ctx);
+  offered = false;
+  hidden = true;
+  assert.equal(await point(300, 13), false, 'Remote must not replace the Install row under the pointer');
+  assert.equal(await point(40, 33), false, 'the hidden About section is not a valid target');
+  assert.deepEqual(selected, []);
+  layer.paint(ctx);
+  assert.equal(await point(300, 13), true, 'a live row rebuilt by a getter is still selectable');
+  assert.deepEqual(selected, ['Remote']);
+});
 
 test('the right column previews the section without a selection until focus enters it', async () => {
   const p = panel();

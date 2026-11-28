@@ -3,10 +3,10 @@ import type { RingInput } from "../g2/ring-input";
 /**
  * Where an input came from. The ring and the glasses' arms are the stock
  * sources; "watch" is the watch remote (Wear OS or Apple Watch), which
- * components may treat with a richer scheme (see isWatchInput) — the ring's
- * semantics are never changed by it.
+ * components may treat with a richer scheme (see isWatchInput). The Neural
+ * Band sends discrete navigation actions through the Android host.
  */
-export type InputSource = "ring" | "left-arm" | "right-arm" | "watch";
+export type InputSource = "ring" | "left-arm" | "right-arm" | "watch" | "neural-band";
 
 /** Fields shared by every input event, whatever its type. */
 export type BaseInputEvent = {
@@ -31,12 +31,20 @@ export type InputEventPayload =
    */
   | { type: "ring-press"; source: "ring" | "watch" }
   | { type: "click"; source: InputSource }
+  /** Air-pointer selection in window-local pixels, never a focus click. */
+  | { type: "pointer-click"; source: "neural-band"; x: number; y: number }
   | { type: "double-click"; source: InputSource }
+  | { type: "back"; source: "neural-band" }
+  | { type: "screen-toggle"; source: "neural-band" }
+  | { type: "middle-double" | "middle-triple"; source: "neural-band" }
+  | { type: "index-hold-start" | "index-hold-end" | "index-hold-cancel"; source: "neural-band" }
+  | { type: "middle-hold-start" | "middle-hold-end" | "middle-hold-cancel"; source: "neural-band" }
   /** Ring scroll (or a watch crown turn, then tagged source "watch"). */
   | { type: "scroll-up"; source?: InputSource }
   | { type: "scroll-down"; source?: InputSource }
   | { type: "long-press"; source: InputSource }
   | { type: "long-press-release"; source: InputSource }
+  | { type: "long-press-cancel"; source: "neural-band" }
   /** G2 2.2.9 tap-then-hold gesture: the app context-menu gesture (long-press is the system menu's). */
   | { type: "short-then-long-press"; source: InputSource }
   /**
@@ -47,18 +55,16 @@ export type InputEventPayload =
    */
   | { type: "system-menu-opened" }
   /**
-   * Spatial (four-way) input, which only a watch can produce: the ring's
-   * scroll is a one-dimensional cursor, these are directions. Components with
+   * Spatial input from the watch or horizontal Neural Band swipes. Components with
    * a spatial meaning for them opt in with Layer.acceptsDirectional /
    * ShellWindow.acceptsDirectional and must then handle all four; for the
-   * rest, directionalFallback turns up/down into scroll, right into "select"
-   * (click) and left into "back" (double-click), so a swipe always does
-   * something sensible.
+   * rest, directionalFallback turns Neural Band swipes into scroll and
+   * preserves the watch's scroll, select and back equivalents.
    */
   | { type: "swipe-up"; source: "watch" }
   | { type: "swipe-down"; source: "watch" }
-  | { type: "swipe-left"; source: "watch" }
-  | { type: "swipe-right"; source: "watch" }
+  | { type: "swipe-left"; source: "watch" | "neural-band" }
+  | { type: "swipe-right"; source: "watch" | "neural-band" }
   /**
    * The stock display lifecycle woke while no EvenHub page was running. This
    * is wake-only, unlike a normal double-click (which turns an on screen off).
@@ -97,6 +103,7 @@ export class PressTracker {
 
   /** True when `event` is the gesture a ring-press from the same source already announced. */
   followsPress(event: InputEvent): boolean {
+    if (event.type === "pointer-click") return false;
     if (event.type === "ring-press") {
       this.pressedSource = event.source;
       return false;
@@ -126,8 +133,8 @@ export function isDirectionalInput(event: InputEvent): event is DirectionalInput
 }
 
 /**
- * The ring-vocabulary equivalent of a directional swipe: up/down scroll,
- * right selects, left backs out.
+ * On a linear target, Band swipes step the selection. Watch swipes preserve
+ * their existing scroll, select and back equivalents.
  */
 export function directionalFallback(event: InputEvent): InputEvent {
   const base = { timestampMs: event.timestampMs };
@@ -137,8 +144,10 @@ export function directionalFallback(event: InputEvent): InputEvent {
     case "swipe-down":
       return { ...base, type: "scroll-down" };
     case "swipe-right":
+      if (event.source === "neural-band") return { ...base, type: "scroll-down", source: event.source };
       return { ...base, type: "click", source: "ring" };
     case "swipe-left":
+      if (event.source === "neural-band") return { ...base, type: "scroll-up", source: event.source };
       return { ...base, type: "double-click", source: "ring" };
     default:
       return event;

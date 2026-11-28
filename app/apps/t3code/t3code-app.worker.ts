@@ -824,6 +824,21 @@ function handleInput(win: AppWindow, event: InputEvent, frameId: number): void {
 }
 
 function handleListInput(event: InputEvent, frameId: number): void {
+  if (event.type === "pointer-click") {
+    const menu = list();
+    // Resolve the position against the rows that were painted, before
+    // loading potentially reordered data for the next render.
+    const index = menu.indexAt(event.y, event.x);
+    if (index === null) {
+      frameTimings.finishFrame(frameId, "discarded: pointer missed the t3code list");
+      return;
+    }
+    menu.select(index);
+    setSelectedKey(menu.selectedItem?.key ?? null);
+    void menu.activate().catch((error) => console.error("t3code list action failed", error));
+    renderNow(frameId);
+    return;
+  }
   if (event.type !== "scroll-up" && event.type !== "scroll-down" && event.type !== "click") {
     frameTimings.finishFrame(frameId, "discarded: t3code list ignored input");
     return;

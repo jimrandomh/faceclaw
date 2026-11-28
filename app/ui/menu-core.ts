@@ -115,6 +115,7 @@ export class Menu<T> {
   private deselected: boolean;
   private scrollY = 0;
   private lastBox: MenuBox | null = null;
+  private lastRows: { items: readonly T[]; layout: MenuLayout; scroll: number } | null = null;
   private readonly motion = new MenuHighlightMotion();
   private readonly scrollMotion = new MenuScrollMotion();
 
@@ -237,18 +238,27 @@ export class Menu<T> {
     }
   }
 
-  /** The selectable item under image-coordinate y in the last painted box, for touch/mirror input. */
-  indexAt(y: number): number | null {
+  /** The selectable row actually displayed at the point, in image coordinates. */
+  indexAt(y: number, x?: number): number | null {
     const box = this.lastBox;
-    if (!box || y < box.y || y >= box.y + box.height) return null;
-    const layout = this.layout(box);
-    const contentY = y - box.y + this.scrollY;
-    for (let index = 0; index < this.itemList.length; index++) {
-      if (contentY >= layout.tops[index]! && contentY < layout.tops[index]! + layout.heights[index]!) {
-        return this.isSelectable(index) ? index : null;
+    const rows = this.lastRows;
+    if (!box || !rows || !Number.isFinite(y) || y < box.y || y >= box.y + box.height ||
+      (x !== undefined && (!Number.isFinite(x) || x < box.x || x >= box.x + box.width))) return null;
+    const { items, layout, scroll } = rows;
+    const contentY = y - box.y + this.scrollMotion.offsetAt(scroll, Date.now());
+    const gap = this.options.rowGap ?? 0;
+    for (let index = 0; index < items.length; index++) {
+      const top = layout.tops[index]!;
+      if (contentY >= top && contentY < top + layout.heights[index]! - gap) {
+        return Object.is(items[index], this.itemList[index]) && this.isSelectable(index) ? index : null;
       }
     }
     return null;
+  }
+
+  /** A host can omit this list on a frame that no longer has room for it. */
+  clearHitTest(): void {
+    this.lastRows = null;
   }
 
   paint(image: GrayImage, box: MenuBox, focused: boolean): void {
@@ -256,6 +266,7 @@ export class Menu<T> {
     this.reconcile();
     const layout = this.layout(box);
     this.ensureVisible(layout, box.height);
+    this.lastRows = { items: this.itemList.slice(), layout, scroll: this.scrollY };
     const now = Date.now();
     const scroll = this.scrollMotion.paint(this.scrollY, box, now);
     const strip = scroll ? this.scrollStrip(image, layout, box, focused, scroll) : null;

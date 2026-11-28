@@ -26,8 +26,11 @@ const MAX_HISTORY = 20;
 export type KeyboardInputSession = {
   /** The send destinations, in the glasses menu's row order. */
   readonly targets: ReadonlyArray<{ id: string; label: string }>;
-  /** Replace the message with what the phone's text field now holds. */
+  /** The unsubmitted draft shared by the phone and glasses. */
+  getText(): string;
   setText(text: string): void;
+  onTextChanged(listener: (text: string) => void): () => void;
+  setHandwritingActive?(active: boolean): void;
   /**
    * Send to the destination highlighted on the glasses (the entry point's
    * default unless the user scrolled the menu). The IME's send key.
@@ -74,6 +77,8 @@ export type KeyboardInputLayerOptions = {
  */
 export class KeyboardInputLayer implements Layer, KeyboardInputSession {
   private text = "";
+  private readonly textListeners = new Set<(text: string) => void>();
+  private handwritingActive = false;
   private readonly menu: Menu<KeyboardMenuRow>;
   private closed = false;
   private currentVisibility: KeyboardInputVisibility;
@@ -134,9 +139,25 @@ export class KeyboardInputLayer implements Layer, KeyboardInputSession {
     }
   }
 
+  getText(): string {
+    return this.text;
+  }
+
   setText(text: string): void {
     if (this.closed || this.text === text) return;
     this.text = text;
+    for (const listener of this.textListeners) listener(text);
+    this.actions.requestRender();
+  }
+
+  onTextChanged(listener: (text: string) => void): () => void {
+    this.textListeners.add(listener);
+    return () => { this.textListeners.delete(listener); };
+  }
+
+  setHandwritingActive(active: boolean): void {
+    if (this.closed || active === this.handwritingActive) return;
+    this.handwritingActive = active;
     this.actions.requestRender();
   }
 
@@ -200,7 +221,7 @@ export class KeyboardInputLayer implements Layer, KeyboardInputSession {
     this.menu.setItems(this.menuRows());
     paintInputDialog(image, {
       title: "Keyboard",
-      status: "Type on the phone",
+      status: this.handwritingActive ? "Write with Neural Band" : "Type on the phone",
       text: this.text || "(nothing typed yet)",
       menu: this.menu,
     });

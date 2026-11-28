@@ -220,6 +220,23 @@ test('a repeated tap before the shell answers starts one view', () => {
   assert.equal(t.clients.length, 2);
 });
 
+test('a Neural Band pointer hit opens the Terminal row under it, not the highlighted row', () => {
+  const t = hubShowingList();
+  const [x, y] = t.textAt('top');
+  const pointer = (x, y) => t.send({
+    type: 'input', windowId: HUB, event: { type: 'pointer-click', source: 'neural-band', x, y },
+    frameId: 0, focused: true,
+  });
+  assert.ok(t.lastFrame().texts.includes('[vim]'));
+  pointer(MIN.width - 1, y);
+  assert.equal(t.repliesOf('set-height-mode').length, 0, 'outside the list does not open a session');
+  pointer(x, y + 1);
+  assert.equal(t.repliesOf('set-height-mode').length, 1);
+  t.answerHeight(MAX);
+  assert.equal(t.clients[1].attached, 'top');
+  assert.deepEqual(t.clients[1].sent, [], 'a position never reaches the terminal as a key');
+});
+
 test('text input reaches the session shown in place', () => {
   const t = hubShowingSession();
   t.send({ type: 'text-input', windowId: HUB, text: 'ls' });
