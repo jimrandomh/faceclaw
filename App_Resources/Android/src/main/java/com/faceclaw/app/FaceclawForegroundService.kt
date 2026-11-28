@@ -28,6 +28,8 @@ class FaceclawForegroundService : Service() {
         private const val LEGACY_CHANNEL_ID = "faceclaw-dashboard"
         private const val CHANNEL_ID = "faceclaw-connection"
         private const val NOTIFICATION_ID = 4201
+        private const val SERVICE_STATE_PREFERENCES = "faceclaw-foreground-service"
+        private const val SERVES_GLASSES_KEY = "serves-glasses"
     }
 
     private var servesGlasses = false
@@ -40,20 +42,25 @@ class FaceclawForegroundService : Service() {
         val action = intent?.action
         val text = intent?.getStringExtra(EXTRA_TEXT)
 
-        if (action == ACTION_STOP) servesGlasses = false
+        val servesBand = FaceclawNeuralBand.shouldRun(this)
+        val state = getSharedPreferences(SERVICE_STATE_PREFERENCES, MODE_PRIVATE)
+        when (action) {
+            ACTION_START, ACTION_UPDATE -> servesGlasses = true
+            ACTION_STOP -> servesGlasses = false
+            // Android delivers a null intent when recreating a sticky service.
+            // Keep the independent glasses demand when both devices were in use.
+            null -> servesGlasses = state.getBoolean(SERVES_GLASSES_KEY, !servesBand)
+        }
+        if (action != null && state.getBoolean(SERVES_GLASSES_KEY, !servesGlasses) != servesGlasses) {
+            state.edit().putBoolean(SERVES_GLASSES_KEY, servesGlasses).apply()
+        }
         if (action == ACTION_NEURAL_BAND_DISABLED && servesGlasses) return START_STICKY
-        if ((action == ACTION_STOP || action == ACTION_NEURAL_BAND_DISABLED) &&
-            !FaceclawNeuralBand.shouldRun(this)
-        ) {
+        if (!servesGlasses && !servesBand) {
             FaceclawNeuralBand.foregroundStopped()
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return START_NOT_STICKY
         }
-
-        if (action == ACTION_START || action == ACTION_UPDATE ||
-            (action == null && !FaceclawNeuralBand.shouldRun(this))
-        ) servesGlasses = true
 
         ensureNotificationChannel()
         val notification = buildNotification(
