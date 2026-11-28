@@ -41,6 +41,11 @@
                 <Label text="{{ phoneInputStyleHint }}" textWrap="true" class="settings-form-hint" />
             </StackLayout>
 
+            <GridLayout rows="auto" columns="*,auto" class="settings-form-row" visibility="{{ neuralBandRowVisibility }}">
+                <Label col="0" text="Neural Band" class="settings-form-label" verticalAlignment="center" />
+                <Button col="1" text="Configure" textWrap="false" tap="{{ onNeuralBandSettingsTap }}" class="settings-picker-button" />
+            </GridLayout>
+
             <!-- iOS, with an Apple Watch paired: whether it has the watch app,
                  and the way to install it. Collapsed otherwise. -->
             <StackLayout class="settings-form-row" visibility="{{ watchAppRowVisibility }}">

@@ -12,15 +12,13 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 
-import androidx.core.content.ContextCompat
-
-import com.tns.NativeScriptActivity
-
 class FaceclawForegroundService : Service() {
     companion object {
         const val ACTION_START = "com.faceclaw.app.action.START"
         const val ACTION_UPDATE = "com.faceclaw.app.action.UPDATE"
         const val ACTION_STOP = "com.faceclaw.app.action.STOP"
+        const val ACTION_NEURAL_BAND = "com.faceclaw.app.action.NEURAL_BAND"
+        const val ACTION_NEURAL_BAND_DISABLED = "com.faceclaw.app.action.NEURAL_BAND_DISABLED"
         const val EXTRA_TEXT = "text"
 
         // Channel id was bumped from "faceclaw-dashboard" when the badge setting
@@ -30,17 +28,35 @@ class FaceclawForegroundService : Service() {
         private const val LEGACY_CHANNEL_ID = "faceclaw-dashboard"
         private const val CHANNEL_ID = "faceclaw-connection"
         private const val NOTIFICATION_ID = 4201
+        private const val SERVICE_STATE_PREFERENCES = "faceclaw-foreground-service"
+        private const val SERVES_GLASSES_KEY = "serves-glasses"
     }
+
+    private var servesGlasses = false
 
     override fun onBind(intent: Intent?): IBinder? {
         return null
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val action = if (intent != null) intent.action else ACTION_START
+        val action = intent?.action
         val text = intent?.getStringExtra(EXTRA_TEXT)
 
-        if (ACTION_STOP == action) {
+        val servesBand = FaceclawNeuralBand.shouldRun(this)
+        val state = getSharedPreferences(SERVICE_STATE_PREFERENCES, MODE_PRIVATE)
+        when (action) {
+            ACTION_START, ACTION_UPDATE -> servesGlasses = true
+            ACTION_STOP -> servesGlasses = false
+            // Android delivers a null intent when recreating a sticky service.
+            // Keep the independent glasses demand when both devices were in use.
+            null -> servesGlasses = state.getBoolean(SERVES_GLASSES_KEY, !servesBand)
+        }
+        if (action != null && state.getBoolean(SERVES_GLASSES_KEY, !servesGlasses) != servesGlasses) {
+            state.edit().putBoolean(SERVES_GLASSES_KEY, servesGlasses).apply()
+        }
+        if (action == ACTION_NEURAL_BAND_DISABLED && servesGlasses) return START_STICKY
+        if (!servesGlasses && !servesBand) {
+            FaceclawNeuralBand.foregroundStopped()
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return START_NOT_STICKY
@@ -48,7 +64,9 @@ class FaceclawForegroundService : Service() {
 
         ensureNotificationChannel()
         val notification = buildNotification(
-            if (text != null && !text.trim().isEmpty()) text else "Connected to glasses"
+            if (!text.isNullOrBlank()) text
+            else if (!servesGlasses) getString(R.string.neural_band_title)
+            else "Connected to glasses"
         )
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -61,8 +79,14 @@ class FaceclawForegroundService : Service() {
             val manager = getSystemService(NotificationManager::class.java)
             manager?.notify(NOTIFICATION_ID, notification)
         }
+        FaceclawNeuralBand.foregroundStarted(this)
 
         return START_STICKY
+    }
+
+    override fun onDestroy() {
+        FaceclawNeuralBand.foregroundStopped()
+        super.onDestroy()
     }
 
     private fun ensureNotificationChannel() {
@@ -88,15 +112,16 @@ class FaceclawForegroundService : Service() {
     }
 
     private fun buildNotification(text: String): Notification {
-        val launchIntent = Intent(this, NativeScriptActivity::class.java)
-        launchIntent.addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        val launchIntent = packageManager.getLaunchIntentForPackage(packageName)?.apply {
+            addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        }
 
         var flags = PendingIntent.FLAG_UPDATE_CURRENT
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             flags = flags or PendingIntent.FLAG_IMMUTABLE
         }
 
-        val contentIntent = PendingIntent.getActivity(this, 0, launchIntent, flags)
+        val contentIntent = launchIntent?.let { PendingIntent.getActivity(this, 0, it, flags) }
 
         val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
             Notification.Builder(this, CHANNEL_ID)
@@ -116,26 +141,24 @@ class FaceclawForegroundService : Service() {
     private fun foregroundServiceType(): Int {
         var type = ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
         // TODO: Make this depend on which audio path (G2 vs phone) is selected
-        if (hasRecordAudioPermission()) {
+        if (servesGlasses && hasRecordAudioPermission()) {
             type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
         }
         // The location type keeps while-in-use location flowing to the
         // Navigate app when the phone screen locks. Only claimed once the
         // permission exists: on API 34+ claiming it without the permission
         // makes startForeground throw.
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && hasFineLocationPermission()) {
+        if (servesGlasses && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && hasFineLocationPermission()) {
             type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
         }
         return type
     }
 
     private fun hasRecordAudioPermission(): Boolean {
-        return ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) ==
-            PackageManager.PERMISSION_GRANTED
+        return checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
     }
 
     private fun hasFineLocationPermission(): Boolean {
-        return ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) ==
-            PackageManager.PERMISSION_GRANTED
+        return checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
     }
 }

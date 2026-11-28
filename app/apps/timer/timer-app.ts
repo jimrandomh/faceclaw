@@ -199,7 +199,7 @@ export class TimersLayer implements Layer {
   /**
    * The selected row's key: the source of truth for the selection, which
    * survives row rebuilds and is pinned to newly ringing items. The list
-   * menu is re-synced from it before each paint, hit test and move.
+   * menu is re-synced from it before painting and moving the highlight.
    */
   private selectionKey = "";
   private readonly list = new Menu<Row>({
@@ -590,15 +590,15 @@ export class TimersLayer implements Layer {
     }
   }
 
-  /** A mirror touch: on the list, select the row under it. */
+  /** On the list, resolve the painted row against the current timer state. */
   hitTest(x: number, y: number, ctx: LayerContext): boolean {
     if (this.mode.kind !== "list") return false;
     if (x < columnsFor(ctx.stack.getBaseSize()).listX) return false;
-    const rows = this.buildRows(Date.now());
-    this.syncList(rows);
-    const index = this.list.indexAt(y);
+    const index = this.list.indexAt(y, x);
     if (index === null) return true;
-    const row = rows[index]!;
+    const key = this.list.items[index]!.key;
+    const row = this.buildRows(Date.now()).find((item) => item.key === key);
+    if (!row) return true;
     if (this.selectionKey === row.key) {
       this.activateRow(row);
     } else {

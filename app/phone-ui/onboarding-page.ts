@@ -1,8 +1,8 @@
 import { NavigatedData, Page } from "@nativescript/core";
 
-import { OnboardingViewModel } from "./onboarding-view-model";
+import { OnboardingViewModel, type OnboardingStep } from "./onboarding-view-model";
 
-type OnboardingContext = { step?: number } | undefined;
+type OnboardingContext = { step?: OnboardingStep } | undefined;
 
 export function navigatingTo(args: NavigatedData): void {
   const page = args.object as Page;

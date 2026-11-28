@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="neural_tutorial_title">Neural Band tutorial</string>
+    <string name="neural_tutorial_close">Close tutorial</string>
+    <string name="neural_tutorial_all">All gestures</string>
+    <string name="neural_tutorial_previous">Previous</string>
+    <string name="neural_tutorial_next">Next</string>
+    <string name="neural_tutorial_done">Done</string>
+    <string name="neural_tutorial_progress">%1$s · %2$d/%3$d</string>
+    <string name="neural_tutorial_navigation">Navigation</string>
+    <string name="neural_tutorial_shortcuts">Shortcuts</string>
+    <string name="neural_tutorial_extra_controls">More controls</string>
+    <string name="neural_tutorial_example">Faceclaw screen example</string>
+    <string name="neural_tutorial_left">Left wrist</string>
+    <string name="neural_tutorial_right">Right wrist</string>
+    <string name="neural_tutorial_auto_left">Automatic · left wrist</string>
+    <string name="neural_tutorial_auto_right">Automatic · right wrist</string>
+    <string name="neural_tutorial_auto_unknown">Automatic · right-wrist illustration while the Band reports its wrist</string>
+
+    <string name="neural_tutorial_scroll">Scroll up or down</string>
+    <string name="neural_tutorial_scroll_how">Slide your thumb up or down along the side of your index finger.</string>
+    <string name="neural_tutorial_scroll_result">Move the selection or scroll the current text.</string>
+    <string name="neural_tutorial_select">Select</string>
+    <string name="neural_tutorial_select_how">Touch the tips of your thumb and index finger together once, then release.</string>
+    <string name="neural_tutorial_select_result">Open the selected item. If the display is asleep, the first pinch wakes it.</string>
+    <string name="neural_tutorial_back">Go back</string>
+    <string name="neural_tutorial_back_how">Touch the tips of your thumb and middle finger together once, then release.</string>
+    <string name="neural_tutorial_back_result">Return to the previous view or close the current menu.</string>
+    <string name="neural_tutorial_across">Scroll within the selection</string>
+    <string name="neural_tutorial_across_how">Slide your thumb sideways across your index finger to the left or right.</string>
+    <string name="neural_tutorial_across_result">Move to the previous or next choice. In the launcher, scroll to a row, pinch to enter it, then scroll to an app.</string>
+
+    <string name="neural_tutorial_sidebar">Focus the app sidebar</string>
+    <string name="neural_tutorial_sidebar_how">Tap your thumb against your middle finger twice in quick succession.</string>
+    <string name="neural_tutorial_sidebar_result">Focus the app sidebar. Scroll to choose an app.</string>
+    <string name="neural_tutorial_launcher">Open the launcher</string>
+    <string name="neural_tutorial_launcher_how">Tap your thumb against your middle finger three times in quick succession.</string>
+    <string name="neural_tutorial_launcher_result">Open the Faceclaw app grid.</string>
+    <string name="neural_tutorial_menu">Open the system menu</string>
+    <string name="neural_tutorial_menu_how">Hold your thumb and middle finger together, then release when the menu appears.</string>
+    <string name="neural_tutorial_menu_result">Show the controls for the current Faceclaw session.</string>
+    <string name="neural_tutorial_dictate">Dictate in chat</string>
+    <string name="neural_tutorial_dictate_how">In a chat, hold your thumb and index finger together, keep your wrist still, and speak. Lift your thumb to finish.</string>
+    <string name="neural_tutorial_dictate_result">Record a message while the pinch is held.</string>
+
+    <string name="neural_tutorial_pointer">Use the air pointer</string>
+    <string name="neural_tutorial_pointer_how">Tap thumb and index three times to toggle the pointer. Aim with your wrist, then pinch your index to click or your middle finger to go back.</string>
+    <string name="neural_tutorial_pointer_result">Point at and select controls that support on-screen clicking.</string>
+    <string name="neural_tutorial_double_tap">Double tap</string>
+    <string name="neural_tutorial_double_tap_how">Tap thumb and index twice in quick succession.</string>
+    <string name="neural_tutorial_double_tap_result">Use the same action as double-tapping the glasses or ring. Go back in apps or turn the display off from the app sidebar. Repeat to wake it.</string>
+    <string name="neural_tutorial_assignment">%1$s · %2$s</string>
+    <string name="neural_tutorial_dial">Pinch and turn to scroll</string>
+    <string name="neural_tutorial_dial_how">Pinch thumb and index, then start turning your wrist while keeping the pinch.</string>
+    <string name="neural_tutorial_dial_result">Scroll one step at a time as you turn.</string>
+</resources>

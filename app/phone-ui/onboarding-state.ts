@@ -8,6 +8,7 @@ const PREVIEW_ONLY_KEY = "onboarding.previewOnly";
 // lets scripts/resetOnboarding.sh clear them.
 const OWNS_RING_KEY = "onboarding.ownsRing";
 const OWNS_WATCH_KEY = "onboarding.ownsWatch";
+const OWNS_NEURAL_BAND_KEY = "onboarding.ownsNeuralBand";
 
 export function hasCompletedOnboarding(): boolean {
   return ApplicationSettings.getBoolean(ONBOARDING_COMPLETE_KEY, false);
@@ -53,4 +54,12 @@ export function ownsWatch(): boolean {
 
 export function setOwnsWatch(owns: boolean): void {
   setBooleanSetting(OWNS_WATCH_KEY, owns);
+}
+
+export function ownsNeuralBand(): boolean {
+  return getBooleanSetting(OWNS_NEURAL_BAND_KEY, false);
+}
+
+export function setOwnsNeuralBand(owns: boolean): void {
+  setBooleanSetting(OWNS_NEURAL_BAND_KEY, owns);
 }

@@ -30,11 +30,20 @@ function historyLabel(text: string): string {
 export class KeyboardInputViewModel extends Observable {
   private session: KeyboardInputSession | null = null
   private text = ''
+  private unsubscribeFromText?: () => void
 
   setSession(session: KeyboardInputSession | null): void {
     if (session === this.session) return
+    this.unsubscribeFromText?.()
     this.session = session
-    this.text = ''
+    this.text = session?.getText() ?? ''
+    this.unsubscribeFromText = session?.onTextChanged(text => {
+      // Local typing already updated this value. Echo only external changes
+      // so a redraw never moves the caret in the middle of phone input.
+      if (this.text === text) return
+      this.text = text
+      this.notifyPropertyChange('keyboardInputText', text)
+    })
     this.notifyPanel(['keyboardInputText', 'keyboardInputVisibility', 'keyboardInputPrimaryTargetLabel',
       'keyboardInputPrimaryTargetVisibility', 'keyboardInputSecondaryTargetLabel', 'keyboardInputSecondaryTargetVisibility',
       'keyboardInputHistoryOpacity'])

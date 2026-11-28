@@ -68,6 +68,8 @@ export class SettingsPanelLayer implements Layer {
   private readonly leftMenu: Menu<SettingsSection>;
   /** The highlighted section's items; unselected while focus is in the left column (a preview). */
   private readonly rightMenu: Menu<MenuItem>;
+  private paintedSections: readonly SettingsSection[] = [];
+  private paintedRight: { section: SettingsSection; items: readonly MenuItem[] } | null = null;
   /** The context of the paint in progress, handed to item render callbacks. */
   private paintCtx: LayerContext | null = null;
 
@@ -89,6 +91,7 @@ export class SettingsPanelLayer implements Layer {
       rowGap: ROW_GAP,
       highlight: { radius: 6 },
       getHeight: () => listRowHeight(getDefaultSmallFont()),
+      isSelectable: (item) => !item.heading,
       draw: ({ image, item, x, y, width, height, selected }) => {
         const disabled = isMenuItemDisabled(item);
         if (item.render) {
@@ -172,6 +175,8 @@ export class SettingsPanelLayer implements Layer {
     // Left column: section labels.
     this.leftMenu.paint(image, { x: padding.left, y: 0, width: LEFT_W, height, padTop: padding.top, padBottom: padding.bottom },
       appFocused && this.focus === "left");
+    this.paintedSections = this.leftMenu.items;
+    this.paintedRight = null;
 
     // Column divider (a light rule, not a full border).
     image.drawLine(divX, top, divX, listBottom, 40);
@@ -200,6 +205,7 @@ export class SettingsPanelLayer implements Layer {
             x: rightX - RIGHT_ROW_OVERHANG, y: listTop, width: rightW + RIGHT_ROW_OVERHANG, height: listEnd - listTop,
             padTop: fromEdge ? padding.top : 0, padBottom: description ? 0 : padding.bottom,
           }, appFocused);
+          this.paintedRight = { section, items: [...rightItems] };
         } finally {
           this.paintCtx = null;
         }
@@ -207,6 +213,40 @@ export class SettingsPanelLayer implements Layer {
     }
 
     return image;
+  }
+
+  /** Activate the item the pointer saw, even when a section's live rows can change. */
+  async hitTest(x: number, y: number, ctx: LayerContext): Promise<boolean> {
+    const leftIndex = this.leftMenu.indexAt(y, x);
+    if (leftIndex !== null) {
+      const section = this.paintedSections[leftIndex];
+      if (!section || section.hidden?.()) return false;
+      this.syncSections();
+      const currentIndex = this.leftMenu.items.indexOf(section);
+      if (currentIndex < 0) return false;
+      this.leftMenu.select(currentIndex);
+      this.focus = "left";
+      this.resetRight();
+      this.paintedRight = null;
+      return true;
+    }
+
+    const painted = this.paintedRight;
+    if (!painted || painted.section !== this.section() || painted.section.hidden?.()) return false;
+    const rightIndex = this.rightMenu.indexAt(y, x);
+    if (rightIndex === null) return false;
+    const shown = painted.items[rightIndex];
+    const items = painted.section.items;
+    const item = items[rightIndex];
+    if (!shown || !item || item.label !== shown.label || item.heading || isMenuItemDisabled(item)) return false;
+    // Some settings rebuild their rows on every read. A unique matching label
+    // at the same position identifies these, without guessing at duplicate rows.
+    if (item !== shown && [painted.items, items].some((rows) =>
+      rows.some((row, index) => index !== rightIndex && row.label === item.label))) return false;
+    this.focus = "right";
+    this.rightMenu.setItems(items, rightIndex);
+    await item.onSelect(ctx, NO_MENU);
+    return true;
   }
 
   /**
@@ -364,6 +404,10 @@ export class SettingsDescriptionOverlayLayer implements Layer {
 
   handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {
     return this.panel.handleInput(event, ctx);
+  }
+
+  hitTest(x: number, y: number, ctx: LayerContext): Promise<boolean> {
+    return this.panel.hitTest(x, y, ctx);
   }
 }
 

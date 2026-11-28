@@ -194,7 +194,8 @@ export class WindowMenu {
       this.close();
       return;
     }
-    await stack.handleInput(event);
+    if (event.type === "pointer-click") await stack.hitTest(event.x, event.y);
+    else await stack.handleInput(event);
     if (stack.isAtBase()) {
       this.stack = null;
     }

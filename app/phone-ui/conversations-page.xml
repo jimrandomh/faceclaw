@@ -9,6 +9,8 @@
             row="0"
             hint="Search (e.g. lunch past 2 days, angry)"
             text="{{ searchText }}"
+            loaded="handwritingSearchLoaded"
+            unloaded="handwritingSearchUnloaded"
             submit="{{ onSearchSubmit }}"
             clear="{{ onSearchClear }}" />
 

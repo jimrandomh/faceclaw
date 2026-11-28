@@ -5,6 +5,7 @@ import { type IconActivity, type IconName } from "../../graphics/icons";
 import { toolRegistry, type ToolResult, type ToolSpec } from "../../assistant/tool-registry";
 import { appViewport, type WindowHeightMode } from "./geometry";
 import { type Viewport } from "../viewport";
+import { makeInputEvent } from "../gestures";
 import * as frameTimings from "../../native/frame-timings";
 import { shell, type ShellWindow } from "./shell";
 import { publishWorkerState } from "./worker-state";
@@ -543,6 +544,13 @@ export class WorkerAppHost {
           frameId,
           focused: shell.isWindowFocused(spec.windowId),
         });
+      },
+      hitTest: (x, y, source) => {
+        // Mirrors keep their existing fallback; a Neural Band position is
+        // delivered only as coordinates, never as an ordinary click.
+        if (closed || source !== "neural-band") return false;
+        window.handleInput(makeInputEvent({ type: "pointer-click", source, x, y }), 0);
+        return true;
       },
       requestRender: () => {
         this.post({ type: "render", windowId: spec.windowId, focused: shell.isWindowFocused(spec.windowId) });

@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="neural_tutorial_title">Tutorial Neural Band</string>
+    <string name="neural_tutorial_close">Chiudi il tutorial</string>
+    <string name="neural_tutorial_all">Tutti i gesti</string>
+    <string name="neural_tutorial_previous">Indietro</string>
+    <string name="neural_tutorial_next">Avanti</string>
+    <string name="neural_tutorial_done">Fine</string>
+    <string name="neural_tutorial_progress">%1$s · %2$d/%3$d</string>
+    <string name="neural_tutorial_navigation">Navigazione</string>
+    <string name="neural_tutorial_shortcuts">Scorciatoie</string>
+    <string name="neural_tutorial_extra_controls">Altri comandi</string>
+    <string name="neural_tutorial_example">Esempio su Faceclaw</string>
+    <string name="neural_tutorial_left">Polso sinistro</string>
+    <string name="neural_tutorial_right">Polso destro</string>
+    <string name="neural_tutorial_auto_left">Automatico · polso sinistro</string>
+    <string name="neural_tutorial_auto_right">Automatico · polso destro</string>
+    <string name="neural_tutorial_auto_unknown">Automatico · esempio con il polso destro in attesa della Band</string>
+
+    <string name="neural_tutorial_scroll">Scorri su o giù</string>
+    <string name="neural_tutorial_scroll_how">Fai scivolare il pollice su o giù lungo il lato dell’indice.</string>
+    <string name="neural_tutorial_scroll_result">Sposti la selezione o scorri il testo della schermata.</string>
+    <string name="neural_tutorial_select">Seleziona</string>
+    <string name="neural_tutorial_select_how">Unisci le punte di pollice e indice una volta, poi separale.</string>
+    <string name="neural_tutorial_select_result">Apri la voce selezionata. Se il display dorme, il primo tocco lo riattiva.</string>
+    <string name="neural_tutorial_back">Torna indietro</string>
+    <string name="neural_tutorial_back_how">Unisci le punte di pollice e medio una volta, poi separale.</string>
+    <string name="neural_tutorial_back_result">Torni alla vista precedente o chiudi il menu aperto.</string>
+    <string name="neural_tutorial_across">Scorri tra le voci</string>
+    <string name="neural_tutorial_across_how">Fai scivolare il pollice di lato sull’indice, verso sinistra o destra.</string>
+    <string name="neural_tutorial_across_result">Vai alla voce precedente o successiva. Nella griglia delle app scorri fino a una riga, fai un pinch per entrarci e scorri fino all’app.</string>
+
+    <string name="neural_tutorial_sidebar">Passa alla barra delle app</string>
+    <string name="neural_tutorial_sidebar_how">Tocca il medio con il pollice due volte di seguito.</string>
+    <string name="neural_tutorial_sidebar_result">Passi alla barra delle app. Scorri per scegliere un’app.</string>
+    <string name="neural_tutorial_launcher">Apri la griglia delle app</string>
+    <string name="neural_tutorial_launcher_how">Tocca il medio con il pollice tre volte di seguito.</string>
+    <string name="neural_tutorial_launcher_result">Vedi tutte le app di Faceclaw.</string>
+    <string name="neural_tutorial_menu">Apri il menu di sistema</string>
+    <string name="neural_tutorial_menu_how">Tieni uniti pollice e medio e rilasciali quando compare il menu.</string>
+    <string name="neural_tutorial_menu_result">Vedi i comandi della sessione Faceclaw.</string>
+    <string name="neural_tutorial_dictate">Detta in chat</string>
+    <string name="neural_tutorial_dictate_how">Nella chat, tieni uniti pollice e indice, mantieni il polso fermo e parla. Solleva il pollice per terminare.</string>
+    <string name="neural_tutorial_dictate_result">Registri il messaggio mentre tieni le dita unite.</string>
+
+    <string name="neural_tutorial_pointer">Usa il puntatore</string>
+    <string name="neural_tutorial_pointer_how">Tocca l’indice col pollice tre volte per attivare o disattivare il puntatore. Muovi il polso per puntare, poi unisci l’indice per fare clic o il medio per tornare indietro.</string>
+    <string name="neural_tutorial_pointer_result">Punti e selezioni i comandi che supportano il clic sullo schermo.</string>
+    <string name="neural_tutorial_double_tap">Doppio tocco</string>
+    <string name="neural_tutorial_double_tap_how">Tocca l’indice col pollice due volte di seguito.</string>
+    <string name="neural_tutorial_double_tap_result">Come il doppio tocco sugli occhiali o sull’anello. Torni indietro nelle app, spegni dalla barra delle app e riaccendi ripetendo il gesto.</string>
+    <string name="neural_tutorial_assignment">%1$s · %2$s</string>
+    <string name="neural_tutorial_dial">Ruota per scorrere</string>
+    <string name="neural_tutorial_dial_how">Unisci pollice e indice e inizia a ruotare il polso tenendo le dita unite.</string>
+    <string name="neural_tutorial_dial_result">Scorri a piccoli passi mentre ruoti.</string>
+</resources>

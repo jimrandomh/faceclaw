@@ -12,7 +12,7 @@ function fixture() {
     '../../graphics/image': {}, './chrome-layer': { windowIcon() {} },
     '../../assistant/tool-registry': { toolRegistry: { removeAppTools() {} } },
     './geometry': { appViewport: () => ({ width: 576, height: 288 }) },
-    '../../native/frame-timings': {}, './worker-state': { publishWorkerState: (...args) => published.push(args) },
+    '../../native/frame-timings': { logFrame() {} }, './worker-state': { publishWorkerState: (...args) => published.push(args) },
     './shell': { shell: { registerWindow: w => shellWindows.set(w.windowId, w), setTrayIcon() {},
       focusWindow: id => focused.push(id), isWindowFocused: () => false } },
   });
@@ -27,6 +27,67 @@ function fixture() {
     surfaceReady: () => resolveSurface(),
   };
 }
+
+test('a worker receives the Neural Band position as distinct input, leaving mirror taps alone', () => {
+  const f = fixture();
+  f.ready();
+  const window = f.open('game');
+  const before = f.sent.length;
+  assert.equal(window.hitTest(17, 46, 'mirror'), false);
+  assert.equal(window.hitTest(17, 46), false);
+  assert.equal(f.sent.length, before);
+
+  assert.equal(window.hitTest(17, 46, 'neural-band'), true);
+  assert.equal(f.sent.length, before + 1);
+  const message = f.sent.at(-1);
+  assert.equal(message.type, 'input');
+  assert.equal(message.windowId, 'game');
+  assert.equal(message.event.type, 'pointer-click');
+  assert.equal(message.event.source, 'neural-band');
+  assert.equal(message.event.x, 17);
+  assert.equal(message.event.y, 46);
+  window.close();
+  assert.equal(window.hitTest(17, 46, 'neural-band'), false);
+});
+
+test('an open worker context menu activates the pointed row once and closes', async () => {
+  const textPositions = new Map();
+  const font = {
+    lineHeight: 12,
+    measureText: text => text.length * 6,
+    drawText: (_image, x, y, text) => textPositions.set(text, [x, y]),
+  };
+  const graphics = require('../.test-build/app/graphics/image.js');
+  const load = loader({}, {
+    '../graphics/image': graphics,
+    '../graphics/ui-fonts': { getDefaultSmallFont: () => font },
+    '../graphics/screen-size': { screenWidth: () => 576, screenHeight: () => 288 },
+    '../native/settings-store': { getStringSetting: (_key, fallback) => fallback },
+    '../native/frame-timings': { spanCurrent: (_name, run) => run() },
+  });
+  const calls = [];
+  const { WindowMenu } = load('app/ui/window-menu.ts');
+  const menu = new WindowMenu({
+    windowId: 'worker', post() {}, title: () => 'Worker',
+    items: () => ['first', 'second'].map(label => ({
+      label,
+      onSelect: ctx => { calls.push(label); ctx.stack.pop(); },
+    })),
+    paintBase: () => new graphics.GrayImage(576, 288, 0),
+    size: { width: 576, height: 288 }, isFocused: () => true,
+  });
+  const pointer = (x, y) => menu.handleInput({ type: 'pointer-click', source: 'neural-band', x, y });
+  menu.open();
+  menu.paint();
+  const [x, y] = textPositions.get('second');
+  await pointer(0, y);
+  assert.deepEqual(calls, []);
+  assert.equal(menu.isOpen(), true);
+  await pointer(x, y + 1);
+  await pointer(x, y + 1);
+  assert.deepEqual(calls, ['second']);
+  assert.equal(menu.isOpen(), false);
+});
 
 test('last window drains close cleanup, then exits the worker and releases its cached host', () => {
   const f = fixture(); f.ready(); const a = f.open('a'), b = f.open('b');

@@ -150,6 +150,7 @@ test('host applies activity only to its own open windows and cleans up on close'
     './chrome-layer': { windowIcon: (icon, letter, glyph, phase) => phase },
     '../../assistant/tool-registry': { toolRegistry: { removeAppTools() {} } },
     './geometry': { appViewport: () => ({ width: 576, height: 260 }) },
+    '../gestures': load('app/ui/gestures.ts', {}),
     '../../native/frame-timings': {},
     './worker-state': {},
     './shell': { shell: { registerWindow: w => shellWindows.set(w.windowId, w) } },

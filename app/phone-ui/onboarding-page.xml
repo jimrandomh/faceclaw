@@ -10,6 +10,7 @@
             <StackLayout>
                 <Label text="{{ headline }}" class="h1 text-center m-t-24" textWrap="true" />
                 <Label text="{{ body }}" class="body-text m-t-24" textWrap="true" />
+                <Button text="Open Band Setup" tap="{{ onNeuralBandSetupTap }}" visibility="{{ neuralBandSetupVisibility }}" class="-primary m-t-24" />
             </StackLayout>
         </ScrollView>
 

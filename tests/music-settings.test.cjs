@@ -178,18 +178,120 @@ test('Music settings keeps toggles and selection when a new app arrives and supp
   const paint = () => layer.paint(ctx, () => new RecordingImage(540, 224));
   const input = (type) => layer.handleInput({ type }, ctx);
   assert.equal(refreshes, 1);
-  paint();
-  await input('click');
+  const playerRow = paint().texts.find(({ text }) => text === 'Player');
+  assert.equal(await layer.hitTest(playerRow.x, playerRow.y, ctx), true);
   assert.equal(prefs.isMediaAppEnabled(player.packageName), false);
+  await input('click');
+  assert.equal(prefs.isMediaAppEnabled(player.packageName), true);
   prefs.rememberMediaApps([{ packageName: 'com.alpha', appName: 'Alpha' }]);
   const image = paint();
   assert.ok(image.texts.some(({ text }) => text === 'Player'));
   assert.ok(image.texts.some(({ text }) => text === 'Alpha'));
   assert.ok(image.texts.every(({ y }) => y >= 0 && y + font.lineHeight <= image.height));
   await input('click');
-  assert.equal(prefs.isMediaAppEnabled(player.packageName), true);
+  assert.equal(prefs.isMediaAppEnabled(player.packageName), false);
   await input('double-click');
   assert.equal(closes, 1);
+});
+
+function musicScreen() {
+  const graphics = require('../.test-build/app/graphics/image.js');
+  const font = { lineHeight: 12, ascent: 10, measureText: text => text.length * 4 };
+  class RecordingImage extends graphics.GrayImage {
+    texts = [];
+    drawText(_font, x, y, text) { this.texts.push({ x, y, text }); }
+    drawMenuSelection(source, x, y) {
+      this.texts.push(...source.texts.map(t => ({ ...t, x: t.x + x, y: t.y + y })));
+    }
+  }
+  const core = load('app/ui/menu-core.ts', name => name === '../graphics/image'
+    ? { ...graphics, GrayImage: RecordingImage }
+    : require(`../.test-build/app/ui/${name}.js`));
+  const events = [];
+  const media = { accessEnabled: true, available: true, packageName: 'com.player', title: 'Current',
+    artist: 'Artist', durationMs: 0, playbackState: 'paused', canPlayPause: true, canSkipNext: true, artVersion: 1 };
+  let queue = [
+    { id: 1, title: 'First song', active: true },
+    { id: 2, title: 'Second song', active: false },
+  ];
+  let apps = [
+    { packageName: 'com.first', serviceClass: 'FirstService', appName: 'First Library' },
+    { packageName: 'com.second', serviceClass: 'SecondService', appName: 'Second Library' },
+  ];
+  const dependencies = {
+    '../../graphics/ui-fonts': { getDefaultSmallFont: () => font },
+    '../../graphics/image': { ...graphics, GrayImage: RecordingImage },
+    '../../graphics/textwrap': { wrapText: (_font, text) => [text], truncateText: (_font, text) => text },
+    '../../util/numeric-util': {},
+    '../../ui/gestures': { isDirectionalInput: () => false },
+    '../../ui/menu': { drawSubmenuIndicator() {} },
+    '../../ui/menu-core': core,
+    '../../ui/metrics': { centeredTextY: (_font, y) => y + 2, lineStep: () => 14, tightRowHeight: () => 16 },
+    '../../native/media-controller': { mediaControllerBridge: {
+      snapshot: () => ({ ...media }), getQueue: () => queue.map(item => ({ ...item })),
+      onStateChange: () => () => {}, getAlbumArt: () => null, getMediaVolumePercent: () => -1,
+      playPause: () => events.push('playPause'), skipNext: () => events.push('next'),
+      skipToQueueItem: id => events.push(`queue:${id}`),
+    } },
+    '../../native/media-browser': { mediaBrowserBridge: { listBrowsableApps: () => apps.map(app => ({ ...app })) } },
+    '../../native/spotify': {},
+    './media-browse': { MediaBrowseLayer: class { constructor({ app }) { events.push(`browse:${app.packageName}`); } } },
+    './music-settings': {},
+    './spotify-menu': {},
+    '../../ui/layers': {},
+    '../../ui/shell/in-process-window': {
+      createInProcessWindow: ({ baseLayer }) => ({ baseLayer, requestRender() {} }),
+      YieldAtRootLayer: class {
+        constructor(inner) { this.inner = inner; }
+        paint(ctx) { return this.inner.paint(ctx); }
+      },
+    },
+  };
+  const { createMusicAppWindow } = load('app/apps/music/music-app.ts', name => {
+    assert.ok(name in dependencies, name);
+    return dependencies[name];
+  }, { global: { isIOS: false } });
+  const { baseLayer } = createMusicAppWindow({});
+  const ctx = { stack: { getBaseSize: () => bordered(540, 260), isFocused: () => true, push() {} } };
+  let rows;
+  const tap = async label => {
+    const row = rows.find(({ text }) => text.trim() === label);
+    assert.ok(row, label);
+    return baseLayer.hitTest(row.x, row.y, ctx);
+  };
+  return {
+    events, media, tap, paint: () => { rows = baseLayer.paint(ctx).texts; },
+    replaceQueue: (next) => { queue = next; },
+    replaceApps: (next) => { apps = next; },
+  };
+}
+
+test('Music pointer selects the visible transport, queue, and library rows', async () => {
+  const music = musicScreen();
+  music.paint();
+  assert.equal(await music.tap('Volume'), false, 'unavailable transport control');
+  assert.equal(await music.tap('Next track'), true);
+  music.paint();
+  assert.equal(await music.tap('Second song'), true);
+  music.media.available = false;
+  music.paint();
+  assert.equal(await music.tap('Second Library'), true);
+  assert.deepEqual(music.events, ['next', 'queue:2', 'browse:com.second']);
+});
+
+test('Music pointer discards stale queue and library rows rather than letting replacements act', async () => {
+  const music = musicScreen();
+  music.paint();
+  music.replaceQueue([{ id: 1, title: 'Replacement 1' }, { id: 2, title: 'Replacement 2' }]);
+  assert.equal(await music.tap('Second song'), false);
+  music.media.available = false;
+  music.paint();
+  music.replaceApps([
+    { packageName: 'com.first', serviceClass: 'FirstService', appName: 'First Library' },
+    { packageName: 'com.other', serviceClass: 'OtherService', appName: 'Second Library' },
+  ]);
+  assert.equal(await music.tap('Second Library'), false);
+  assert.deepEqual(music.events, []);
 });
 
 test('native session selection skips ignored playing and idle apps, including the all-ignored case', (t) => {

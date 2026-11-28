@@ -4,7 +4,7 @@ const { loader } = require('./helpers/load-typescript.cjs');
 
 const NO_LEVELS = { headset: null, headsetCharging: null, case: null, caseCharging: null, ring: null, ringCharging: null };
 
-function fixture() {
+function fixture(android = false, bandAvailable = android) {
   let brightness = '40', mode = 'small', style = 'watch', picked, levels = { ...NO_LEVELS };
   const changes = [], writes = [], back = [];
   const settingListeners = new Set(), batteryListeners = new Set(), watchListeners = new Set();
@@ -23,8 +23,17 @@ function fixture() {
     onAnySettingChanged: subscribe(settingListeners),
   };
   // glasses-display-state and glasses-presence are pure, so the real ones load.
-  const load = loader({}, {
-    '@nativescript/core': { Observable, Dialogs: { action: async () => picked }, Frame: { topmost: () => ({ goBack: () => back.push(true) }) } },
+  const openedBand = [];
+  const activity = {};
+  const load = loader({
+    global: { isAndroid: android },
+    com: { faceclaw: { app: { FaceclawNeuralBand: {
+      isAvailable: () => bandAvailable,
+      openSettings: current => openedBand.push(current),
+    } } } },
+  }, {
+    '@nativescript/core': { Observable, Application: { android: { foregroundActivity: activity } },
+      Dialogs: { action: async () => picked }, Frame: { topmost: () => ({ goBack: () => back.push(true) }) } },
     '../ui/dashboard-settings': settings,
     '../ui/shell/shell': { shell: { getBatteryLevels: () => levels, onBatteryLevelsChanged: subscribe(batteryListeners) } },
     '../native/watch-app-install': { watchAppInstall: { getState: () => watch.state, getSource: () => watch.source,
@@ -32,13 +41,26 @@ function fixture() {
   });
   const { SettingsViewModel } = load('app/phone-ui/settings-view-model.ts');
   const presence = load('app/g2/glasses-presence.ts');
-  return { model: new SettingsViewModel(), changes, writes, back, presence, settingListeners, batteryListeners, watch, watchListeners,
+  return { model: new SettingsViewModel(), changes, writes, back, presence, settingListeners, batteryListeners, watch, watchListeners, activity, openedBand,
     setWatch: next => { Object.assign(watch, next); for (const fn of watchListeners) fn(); },
     brightness: () => brightness, mode: () => mode, style: () => style, pick: value => { picked = value; },
     setLevels: next => { levels = { ...NO_LEVELS, ...next }; for (const fn of batteryListeners) fn(); },
     changeElsewhere: fn => { fn({ setBrightness: value => { brightness = value; }, setStyle: value => { style = value; } });
       for (const listener of settingListeners) listener(); } };
 }
+
+test('phone settings only show a Neural Band build with a working Android driver', () => {
+  const android = fixture(true);
+  assert.equal(android.model.neuralBandRowVisibility, 'visible');
+  android.model.onNeuralBandSettingsTap();
+  assert.deepEqual(android.openedBand, [android.activity]);
+
+  for (const app of [fixture(), fixture(true, false)]) {
+    assert.equal(app.model.neuralBandRowVisibility, 'collapse');
+    app.model.onNeuralBandSettingsTap();
+    assert.deepEqual(app.openedBand, []);
+  }
+});
 
 test('brightness controls snap manual levels and restore the manual value after Auto', () => {
   const h = fixture();

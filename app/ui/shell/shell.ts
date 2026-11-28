@@ -189,7 +189,7 @@ export type ShellWindow = {
    * A touch from the phone's mirror at (x, y) in app-viewport coordinates.
    * True if the window acted on it; otherwise the controller sends a select.
    */
-  hitTest?: (x: number, y: number) => Promise<boolean> | boolean;
+  hitTest?: (x: number, y: number, source?: "mirror" | "neural-band") => Promise<boolean> | boolean;
   /**
    * Deliver a text string to the window (e.g. finalized voice input). Optional:
    * only windows that consume typed text (the terminal) implement it.
@@ -462,6 +462,8 @@ const SWITCHER_SWIPES: Record<
   popup: { "swipe-left": "scroll-up", "swipe-right": "scroll-down", "swipe-up": "click", "swipe-down": "click" },
 };
 
+type NeuralBandDictation = { window: ShellWindow } | { dialog?: VoiceInputLayer };
+
 /**
  * Every setting the shell's paint depends on that nothing else repaints it
  * for (the top bar's contents and placement, the window frame, the scene's
@@ -480,6 +482,7 @@ class Shell {
   private focus: FocusKind = "sidebar";
   /** The window last told it holds input focus (see syncInputFocus). */
   private inputFocusedWindowId: string | null = null;
+  private neuralBandDictation: NeuralBandDictation | null = null;
   private screenOn = true;
   private lastInputAtMs = Date.now();
   /** The most recent input event received, for windows gaining focus (see ShellWindow.onFocus). */
@@ -768,6 +771,21 @@ class Shell {
     return !this.stack.isAtBase();
   }
 
+  /** A panel point belongs to an open overlay before status icons or windows. */
+  async hitTestOverlay(x: number, y: number): Promise<boolean> {
+    if (!this.screenOn) return true;
+    if (this.stack.isAtBase()) {
+      return this.activeVoiceLayer !== null || this.activeKeyboardLayer?.shownOnGlasses === true;
+    }
+    this.noteUserActivity();
+    try {
+      await this.stack.hitTest(x, y);
+    } finally {
+      this.syncInputFocus();
+    }
+    return true;
+  }
+
   /** The window whose sidebar icon is at screen (x, y), for mirror touches. */
   windowAtSidebarPoint(x: number, y: number): ShellWindow | null {
     const windows = this.switcherWindows();
@@ -823,6 +841,8 @@ class Shell {
    */
   private syncInputFocus(): void {
     const target = this.inputTargetWindow();
+    const hold = this.neuralBandDictation;
+    if (hold && "window" in hold && target !== hold.window) this.resetNeuralBandInput();
     const targetId = target?.windowId ?? null;
     if (targetId === this.inputFocusedWindowId) return;
     const previous = this.windows.find((w) => w.windowId === this.inputFocusedWindowId);
@@ -1010,9 +1030,10 @@ class Shell {
    * asleep. The scene also carries the whole display's stereo depth (none
    * under a Full Screen or immersive window).
    */
-  paintScene(): Uint8Array {
+  paintScene(overlay?: Plane): Uint8Array {
     if (!this.screenOn) return encodeShellScene([]);
     const planes = this.stack.paintUndimmed();
+    if (overlay) planes.push(overlay);
     return spanCurrent("encode-scene", () => encodeShellScene(planes, uiDepth(this.foregroundWindow()?.appId)));
   }
 
@@ -1097,6 +1118,10 @@ class Shell {
       return { shell: wokeScreen || action === "voice-input", window: false };
     }
 
+    if (event.type === "index-hold-end" || event.type === "index-hold-cancel") {
+      return this.stopNeuralBandDictation(event.type === "index-hold-cancel", event.timestampMs, frameId);
+    }
+
     this.lastInputAtMs = Date.now();
 
     // Anything but the long-press itself means the press ended (or the event
@@ -1111,6 +1136,32 @@ class Shell {
         return { shell: true, window: false };
       }
       return { shell: false, window: false };
+    }
+
+    if (event.type === "index-hold-start") {
+      return this.startNeuralBandDictation(event.timestampMs, frameId);
+    }
+
+    if (event.type === "screen-toggle") {
+      this.sleep();
+      return { shell: true, window: false };
+    }
+
+    if (event.type === "middle-hold-end" || event.type === "middle-hold-cancel") {
+      return { shell: false, window: false };
+    }
+    if (event.type === "middle-double" || event.type === "middle-triple" || event.type === "middle-hold-start") {
+      if (!this.stack.isAtBase()) return { shell: false, window: false };
+      if (event.type === "middle-double") this.yieldFocusToSidebar();
+      else if (event.type === "middle-triple") this.focusWindow("launcher");
+      else this.openEscapeMenu();
+      return { shell: true, window: false };
+    }
+
+    if (event.type === "back") {
+      // At the switcher root, Band Back leaves the display on.
+      if (this.focus === "sidebar" && this.stack.isAtBase()) return { shell: false, window: false };
+      event = { ...event, type: "double-click" };
     }
 
     // Long-press is the shell's own gesture: it opens the system menu
@@ -1293,7 +1344,9 @@ class Shell {
   }
 
   private handleSidebarInput(event: InputEvent): ShellInputOutcome {
-    const type = isDirectionalInput(event) ? SWITCHER_SWIPES[switcherPosition()][event.type] : event.type;
+    const type = isDirectionalInput(event)
+      ? event.source === "neural-band" ? directionalFallback(event).type : SWITCHER_SWIPES[switcherPosition()][event.type]
+      : event.type;
     switch (type) {
       case "double-click":
         // A double-tap at the root (the app switcher selected) turns the
@@ -1519,10 +1572,66 @@ class Shell {
   // preview-mode permission prompt); a second tap must not queue another open.
   private voiceDialogPending = false;
 
+  private async startNeuralBandDictation(timestampMs: number, frameId: number): Promise<ShellInputOutcome> {
+    if (this.neuralBandDictation || this.activeVoiceLayer || this.activeKeyboardLayer ||
+        this.voiceDialogPending || !this.stack.isAtBase() || this.config.voiceInputEnabled === false) {
+      return { shell: false, window: false };
+    }
+    const window = this.foregroundWindow();
+    if (window?.isVoiceCapturing?.()) return { shell: false, window: false };
+    if (window?.holdToTalk) {
+      if (this.focus === "sidebar") {
+        this.focus = "window";
+        window.onFocus?.(this.lastInput);
+      }
+      this.neuralBandDictation = { window };
+      await window.handleInput({ type: "long-press", source: "neural-band", timestampMs }, frameId);
+      return { shell: true, window: true };
+    }
+    const hold: { dialog?: VoiceInputLayer } = {};
+    this.neuralBandDictation = hold;
+    this.openVoiceDialog({
+      defaultTarget: "app",
+      canOpen: () => this.neuralBandDictation === hold && this.screenOn &&
+        this.stack.isAtBase() && this.foregroundWindow() === window,
+      onOpen: (layer) => { hold.dialog = layer; },
+    });
+    return { shell: true, window: false };
+  }
+
+  private async stopNeuralBandDictation(cancel: boolean, timestampMs: number, frameId: number): Promise<ShellInputOutcome> {
+    const hold = this.neuralBandDictation;
+    this.neuralBandDictation = null;
+    if (!hold) return { shell: false, window: false };
+    if ("window" in hold) {
+      const release = !cancel && this.screenOn && this.focus === "window" &&
+        this.stack.isAtBase() && this.foregroundWindow() === hold.window;
+      await hold.window.handleInput({
+        type: release ? "long-press-release" : "long-press-cancel",
+        source: "neural-band",
+        timestampMs,
+      }, frameId);
+      return { shell: false, window: true };
+    }
+    if (!hold.dialog || this.activeVoiceLayer !== hold.dialog) return { shell: false, window: false };
+    if (cancel) this.stack.remove(hold.dialog);
+    else hold.dialog.endCapture();
+    return { shell: true, window: false };
+  }
+
+  /** Discard pending preparation or a draft created by this Band hold. */
+  resetNeuralBandInput(): void {
+    void this.stopNeuralBandDictation(true, Date.now(), 0).then((outcome) => {
+      if (outcome.shell) this.config.requestShellRender();
+    }).catch((error) => console.warn("Neural Band dictation could not be cancelled", error));
+  }
+
   private openVoiceDialog(options: {
     finishOnClick?: boolean;
     handsFree?: boolean;
     defaultTarget: "assistant" | "app";
+    canOpen?: () => boolean;
+    onOpen?: (layer: VoiceInputLayer) => void;
   }): void {
     if (this.config.voiceInputEnabled === false || this.voiceDialogPending) return;
     this.voiceDialogPending = true;
@@ -1537,8 +1646,9 @@ class Shell {
       }
       // Re-checked after the await: another path may have opened a dialog
       // (or torn down the base state) while a permission prompt was up.
-      if (!ready || this.activeVoiceLayer || this.activeKeyboardLayer) return;
-      this.openVoiceDialogNow(options);
+      if (!ready || this.activeVoiceLayer || this.activeKeyboardLayer || options.canOpen?.() === false) return;
+      const layer = this.openVoiceDialogNow(options);
+      options.onOpen?.(layer);
       this.config.requestShellRender();
     })();
   }
@@ -1547,7 +1657,7 @@ class Shell {
     finishOnClick?: boolean;
     handsFree?: boolean;
     defaultTarget: "assistant" | "app";
-  }): void {
+  }): VoiceInputLayer {
     const targets = this.buildVoiceSendTargets();
     let defaultIndex = targets.findIndex((target) => target.id === options.defaultTarget);
     if (defaultIndex < 0) defaultIndex = 0;
@@ -1582,6 +1692,7 @@ class Shell {
     voiceActivity.setActive(true);
     this.stack.push(layer);
     layer.startCapture();
+    return layer;
   }
 
   /**
@@ -1734,6 +1845,12 @@ class Shell {
     this.config.onKeyboardInputChanged?.(layer);
     this.config.requestShellRender();
     return layer;
+  }
+
+  /** The visible, focused compose field for an external handwriting source. */
+  focusedKeyboardInput(): KeyboardInputSession | null {
+    const layer = this.activeKeyboardLayer;
+    return this.screenOn && layer && this.stack.topMatches((top) => top === layer) ? layer : null;
   }
 
   isAssistantAvailable(): boolean {
@@ -2212,6 +2329,19 @@ export function inputEventToString(event: InputEvent): string {
       return `Click from ${event.source}`;
     case "double-click":
       return `Double click from ${event.source}`;
+    case "back":
+      return "Back from Neural Band";
+    case "screen-toggle":
+      return "Display toggle from Neural Band";
+    case "middle-double":
+    case "middle-triple":
+    case "index-hold-start":
+    case "index-hold-end":
+    case "index-hold-cancel":
+    case "middle-hold-start":
+    case "middle-hold-end":
+    case "middle-hold-cancel":
+      return `Neural Band ${event.type}`;
     case "scroll-up":
       return `Scroll up`;
     case "scroll-down":
@@ -2220,6 +2350,8 @@ export function inputEventToString(event: InputEvent): string {
       return `Long press from ${event.source}`;
     case "long-press-release":
       return `Long press release from ${event.source}`;
+    case "long-press-cancel":
+      return `Long press cancelled from ${event.source}`;
     case "short-then-long-press":
       return `Short then long press from ${event.source}`;
     case "swipe-left":
@@ -2236,6 +2368,8 @@ export function inputEventToString(event: InputEvent): string {
       return `Wakeword`;
     case "system-menu-opened":
       return `System menu opened`;
+    case "pointer-click":
+      return `Neural Band pointer click at ${event.x},${event.y}`;
     default:
     case "unknown":
       return `Unknown event: ${event.kind} ${event.eventSource} ${event.eventType}`;

@@ -30,9 +30,36 @@ import type { KeyEvent } from "./keyboard/keys";
 import { hasExtractedEvenHubFonts } from "./firmware-builder";
 import { isHaltedSessionPhase, resumeAutoReconnect, suppressAutoReconnect } from "./reconnect-policy";
 import { WearRemote, type WearRemoteInputKind } from "./wear-remote";
+import {
+  listenForNeuralBandActions,
+  listenForNeuralBandHandwriting,
+  listenForNeuralBandPointer,
+  neuralBandNativeModes,
+  type NeuralBandAction,
+} from "../native/neural-band";
+import {
+  focusedNeuralBandSearchTarget,
+  neuralBandCursorPlane,
+  NeuralBandModalities,
+  type NeuralBandCursor,
+} from "./neural-band-modalities";
 
 /** Who a synthetic (non-firmware) input stands for. */
 type SyntheticInputOrigin = "ring" | "watch";
+type NeuralBandNavigationAction = Exclude<NeuralBandAction, "index-double" | "index-triple" | "pointer-off" | "session-ended">;
+type DashboardInputEvent = RawInputEvent | { kind: "neural-band"; action: NeuralBandNavigationAction; frameId: number };
+
+function neuralBandInputType(action: NeuralBandNavigationAction) {
+  switch (action) {
+    case "select": return "click";
+    // The Band's thumb scroll follows the current axis of the focused menu.
+    case "swipe-left":
+    case "dial-up": return "scroll-up";
+    case "swipe-right":
+    case "dial-down": return "scroll-down";
+    default: return action;
+  }
+}
 
 /** Gestures the phone's mirror view reports (see handleMirrorTouch). */
 export type MirrorTouchKind =
@@ -66,7 +93,7 @@ import { prepareFrameDraws } from "../graphics/glyph-wire";
 import { createLockScreenImage, LOCK_SCREEN_SURFACE_ID } from "./lock-screen";
 import { rawInputEventToInputEvent, shell, type ShellInputOutcome } from "../ui/shell/shell";
 import { NotificationPopupDelay, notificationPopupDelayMs } from "../ui/shell/notification-popup-delay";
-import { type InputEvent } from "../ui/gestures";
+import { makeInputEvent, type InputEvent } from "../ui/gestures";
 import { registerSystemTools } from "../assistant/system-tools";
 import { updateGlassesPresence } from "./glasses-presence";
 import { timerEngine } from "../apps/timer/timer-engine";
@@ -81,7 +108,7 @@ import { type InProcessAppOptions, type InProcessWindow } from "../ui/shell/in-p
 import { loadPersistedOpenApps, savePersistedOpenApps } from "../ui/shell/open-apps-persistence";
 import { appViewportRect, isOnSwitcherEdge, screenHeight, screenWidth, sidebarStripVisible, windowEdges, type ScreenRect, type WindowHeightMode } from "../ui/shell/geometry";
 import { sameEdges } from "../ui/viewport";
-import { type ContinuousCaptureOptions, type LayerActions, type MicCount, type TextSettingsEditToggle, type TranscriptionChoice } from "../ui/layers";
+import { LayerStack, type ContinuousCaptureOptions, type LayerActions, type MicCount, type TextSettingsEditToggle, type TranscriptionChoice } from "../ui/layers";
 import { type KeyboardInputSession } from "../ui/shell/keyboard-input";
 import { appSwitcherPositionSetting, glassesModelName, glassesTypeSetting, statusBarPositionSetting, statusBarVisibilitySetting, windowBorderSetting, getBrightnessPreferences, displayLayoutSetting, navigateDisplayLayoutSetting, terminalDisplayLayoutSetting, elevenLabsApiKeySetting, getStringSettingById, openAiApiKeySetting, nightscoutApiTokenSetting, firmwareDebugFlagsSetting, whisperServerApiKeySetting, whisperServerLanguageSetting, whisperServerModelSetting, whisperServerUrlSetting, lockScreenEnabledSetting, nightscoutSiteUrlSetting, onAnySettingChanged, previewColorSetting, effectiveRingConnectionMode, type RingConnectionMode, saveRecordingSetting, sonioxApiKeySetting, screenTimeoutSetting, screenTimeoutSettingToMs, shouldPopUpNewNotification, suspendEvenHubWhenScreenOffSetting, voiceProviderSetting, wakeWordActionSetting, type ConfigSettingString } from "../ui/dashboard-settings";
 import { isIgnoringBatteryOptimizations, requestIgnoreBatteryOptimizations } from "../native/battery-optimization";
@@ -384,6 +411,28 @@ class DashboardController {
   // The open keyboard dialog's session (see Shell.startKeyboardInput); the
   // phone's typing panel feeds it.
   private keyboardInput: KeyboardInputSession | null = null;
+  private neuralBandCursor: NeuralBandCursor | null = null;
+  private readonly neuralBandCursorKey = LayerStack.allocateShellKey();
+  private readonly neuralBandModalities = new NeuralBandModalities({
+    ...neuralBandNativeModes,
+    bounds: () => ({ width: screenWidth(), height: screenHeight() }),
+    writingTarget: () => focusedNeuralBandSearchTarget() ?? shell.focusedKeyboardInput(),
+    noteActivity: () => shell.noteUserActivity(),
+    pointerChanged: (cursor) => {
+      this.neuralBandCursor = cursor;
+      this.requestShellRender();
+    },
+    pointerClick: (x, y) => {
+      void this.handlePanelTap(x, y, "neural-band").catch((error) => {
+        this.appendLog(`Neural Band click failed: ${this.formatError(error)}`);
+      });
+    },
+    pointerBack: () => {
+      void this.handleNeuralBandAction("back").catch((error) => {
+        this.appendLog(`Neural Band back failed: ${this.formatError(error)}`);
+      });
+    },
+  });
   // Other in-process singleton apps, keyed by windowId.
   private readonly inProcessApps = new Map<string, InProcessWindow>();
   private sharedActions!: Omit<LayerActions, "requestRender">;
@@ -453,6 +502,7 @@ class DashboardController {
       prepareVoiceCapture: () => this.prepareVoiceCapture(),
       onKeyboardInputChanged: (session) => {
         this.keyboardInput = session;
+        this.neuralBandModalities.syncFocus();
         this.emit();
       },
       onWindowsChanged: () => {
@@ -467,6 +517,7 @@ class DashboardController {
       onScreenStateChanged: (on) => {
         // Any wake of the regular UI replaces a showing Glanceboard.
         if (on) this.glance.dismiss();
+        else this.resetNeuralBandInput();
         this.handleScreenStateChanged(on);
         if (on) this.requestShellRender();
         if (on) keyboardService.retryNow();
@@ -522,6 +573,17 @@ class DashboardController {
       text: (text, submit) => { if (!shell.isScreenOn()) shell.wake("window"); shell.sendTextToForegroundWindow(text, { submit }); this.requestShellRender(); },
       assistantAvailable: () => shell.isAssistantAvailable(),
       assistant: text => shell.sendToAssistant(text),
+    });
+    listenForNeuralBandActions((action) => {
+      void this.handleNeuralBandAction(action).catch((error) => {
+        this.appendLog(`Neural Band input failed: ${this.formatError(error)}`);
+      });
+    });
+    listenForNeuralBandPointer((records) => {
+      if (this.canUseNeuralBandModalities()) this.neuralBandModalities.onPointer(records);
+    });
+    listenForNeuralBandHandwriting((event) => {
+      if (this.canUseNeuralBandModalities()) this.neuralBandModalities.onHandwriting(event);
     });
     // A keyboard paired through the glasses (CFW keyboard bridge). The
     // service decides what each key means (app/g2/keyboard/key-router.ts);
@@ -825,6 +887,7 @@ class DashboardController {
   private setGlassesLocked(locked: boolean, reason: string): void {
     if (locked === this.glassesLocked) return;
     this.glassesLocked = locked;
+    if (locked) this.resetNeuralBandInput();
     this.appendLog(`glasses ${locked ? "locked" : "unlocked"}: ${reason}`);
     this.wearRemote?.schedulePublish();
     void this.syncLockSurface().catch((error) => {
@@ -1505,6 +1568,7 @@ class DashboardController {
     const target = this.previewTarget;
     if (!target) return;
     this.previewTarget = null;
+    this.resetNeuralBandInput();
     this.glance.reset();
     // A recording lives in the display it was started on: save it, as a
     // disconnect does, rather than lose it with this one.
@@ -2067,6 +2131,65 @@ class DashboardController {
     await this.handleInputEvent(event);
   }
 
+  private canUseNeuralBandModalities(): boolean {
+    return !this.glassesLocked && !this.evenHubResumePromise && shell.isScreenOn() &&
+      (this.phase === "connected" || this.isPreviewDisplayActive());
+  }
+
+  private resetNeuralBandInput(): void {
+    this.neuralBandModalities.stop();
+    shell.resetNeuralBandInput();
+  }
+
+  private async handleNeuralBandAction(action: NeuralBandAction): Promise<void> {
+    if (action === "session-ended") {
+      this.resetNeuralBandInput();
+      return;
+    }
+    if (action === "pointer-off") {
+      this.neuralBandModalities.pointerOff();
+      return;
+    }
+    // The logical display comes on before the glasses finish waking. An
+    // input made during this transition must not operate the unseen UI later.
+    if (this.evenHubResumePromise) return;
+    if (this.phase !== "connected" && !this.isPreviewDisplayActive()) return;
+    if (this.glassesLocked) {
+      if (action === "double-click" || action === "screen-toggle") {
+        await this.handleInputEvent({ kind: "neural-band", action, frameId: 0 });
+      }
+      return;
+    }
+    if (shell.isScreenOn()) {
+      if (action === "index-double") {
+        shell.noteUserActivity();
+        this.neuralBandModalities.togglePointer();
+        return;
+      }
+      if (action === "index-triple") {
+        shell.noteUserActivity();
+        if (!focusedNeuralBandSearchTarget() && !shell.focusedKeyboardInput() && !shell.hasOverlay()) {
+          shell.startKeyboardInput();
+        }
+        this.neuralBandModalities.toggleHandwriting();
+        return;
+      }
+      if (action === "back" && this.neuralBandModalities.stopHandwriting()) return;
+      await this.handleInputEvent({ kind: "neural-band", action, frameId: 0 });
+    } else if (action === "select" || action === "double-click" || action === "screen-toggle") {
+      // A Band wake gesture only wakes the glasses. Wait for the EvenHub
+      // session using the same directional wake path as the keyboard.
+      await this.handleInputEvent({
+        kind: "display-wake",
+        containerName: "",
+        eventType: OsEventTypeList.DOUBLE_CLICK_EVENT,
+        eventSource: EventSourceType.TOUCH_EVENT_FORM_DUMMY_NULL,
+        systemExitReasonCode: 0,
+        frameId: 0,
+      });
+    }
+  }
+
   /**
    * A touch on the phone's mirror of the glasses display. Gestures other than
    * a tap are the watch scheme (swipes navigate, double-tap is back, a hold
@@ -2097,18 +2220,27 @@ class DashboardController {
     const at = mirrorToPanelFraction(this.displayPreviewCrop, nx, ny);
     const x = Math.round(Math.min(1, Math.max(0, at.nx)) * screenWidth());
     const y = Math.round(Math.min(1, Math.max(0, at.ny)) * screenHeight());
-    const foreground = shell.foregroundWindow();
-    const stripShown = sidebarStripVisible(shell.getFocus(), foreground?.appId);
-    this.appendLog(`mirror tap at ${x},${y}`);
-    if (!shell.hasOverlay() && shell.focusStatusItemAt(x, y)) {
-      this.appendLog("mirror tap: status bar item");
+    await this.handlePanelTap(x, y, "mirror");
+  }
+
+  private async handlePanelTap(x: number, y: number, source: "mirror" | "neural-band"): Promise<void> {
+    if (source === "neural-band" && !this.canUseNeuralBandModalities()) return;
+    this.appendLog(`${source} tap at ${x},${y}`);
+    if (await shell.hitTestOverlay(x, y)) {
       this.requestShellRender();
       return;
     }
-    if (!shell.hasOverlay() && stripShown && isOnSwitcherEdge(x, y, foreground?.heightMode ?? "min", foreground?.appId)) {
+    const foreground = shell.foregroundWindow();
+    const stripShown = sidebarStripVisible(shell.getFocus(), foreground?.appId);
+    if (shell.focusStatusItemAt(x, y)) {
+      this.appendLog(`${source} tap: status bar item`);
+      this.requestShellRender();
+      return;
+    }
+    if (stripShown && isOnSwitcherEdge(x, y, foreground?.heightMode ?? "min", foreground?.appId)) {
       const target = shell.windowAtSidebarPoint(x, y);
       if (target) {
-        this.appendLog(`mirror tap: sidebar -> ${target.title}`);
+        this.appendLog(`${source} tap: sidebar -> ${target.title}`);
         shell.focusWindow(target.windowId);
         shell.foregroundWindow()?.requestRender();
         this.requestShellRender();
@@ -2116,20 +2248,20 @@ class DashboardController {
       return;
     }
     const window = shell.foregroundWindow();
-    if (window && !shell.hasOverlay()) {
+    if (window) {
       const rect = appViewportRect(window.heightMode, window.appId);
       const inside = x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height;
-      if (shell.getFocus() !== "window") {
+      if ((inside || source === "mirror") && shell.getFocus() !== "window") {
         shell.focusWindow(window.windowId);
         this.requestShellRender();
       }
-      if (inside && window.hitTest && (await window.hitTest(x - rect.x, y - rect.y))) {
-        this.appendLog(`mirror tap: ${window.title} at ${x - rect.x},${y - rect.y}`);
+      if (inside && window.hitTest && (await window.hitTest(x - rect.x, y - rect.y, source))) {
+        this.appendLog(`${source} tap: ${window.title} at ${x - rect.x},${y - rect.y}`);
         this.requestShellRender();
         return;
       }
     }
-    await this.injectSyntheticRingInput("click", "watch");
+    if (source === "mirror") await this.injectSyntheticRingInput("click", "watch");
   }
 
   /** A document arrived via Android's Share intent: open it as a new window. */
@@ -2524,10 +2656,11 @@ class DashboardController {
     }
   }
 
-  private async handleInputEvent(event: RawInputEvent): Promise<void> {
+  private async handleInputEvent(event: DashboardInputEvent): Promise<void> {
     const frameId =
       event.frameId > 0 ? event.frameId : frameTimings.startFrame(`input:${event.kind} (untracked source)`);
-    frameTimings.logFrame(frameId, `TS input handler start: ${event.kind} ${eventLabel(event.kind, event.eventType)}`);
+    const label = event.kind === "neural-band" ? event.action : eventLabel(event.kind, event.eventType);
+    frameTimings.logFrame(frameId, `TS input handler start: ${event.kind} ${label}`);
     let frameOwned = false;
     try {
       if (event.kind === "sys-event" && event.eventType === OsEventTypeList.HEAD_DOWN_EVENT) {
@@ -2540,7 +2673,9 @@ class DashboardController {
         }
         return;
       }
-      const inputEvent = rawInputEventToInputEvent(event);
+      const inputEvent = event.kind === "neural-band"
+        ? makeInputEvent({ type: neuralBandInputType(event.action), source: "neural-band" })
+        : rawInputEventToInputEvent(event);
       if (!acceptInput(inputEvent)) return;
       // The gesture, plus which app is on screen and whether input goes to it,
       // the sidebar, or a shell overlay. Java only knows the raw event codes,
@@ -2550,14 +2685,15 @@ class DashboardController {
       if (this.glassesLocked) {
         const ringDoubleTap =
           inputEvent.type === "double-click" &&
+          event.kind !== "neural-band" &&
           (event.eventSource === EventSourceType.TOUCH_EVENT_FROM_RING ||
             event.eventSource === EventSourceType.TOUCH_EVENT_FROM_WATCH);
+        const bandDisplayToggle = event.kind === "neural-band" &&
+          (inputEvent.type === "double-click" || inputEvent.type === "screen-toggle");
         const suspendedDisplayWake = inputEvent.type === "display-wake";
-        if (ringDoubleTap || suspendedDisplayWake) {
+        if (ringDoubleTap || bandDisplayToggle || suspendedDisplayWake) {
           if (shell.isScreenOn()) {
-            // A normal ring double-tap still turns the locked display off.
-            // display-wake is directional and can only turn an off display on.
-            if (ringDoubleTap) shell.sleep();
+            if (ringDoubleTap || bandDisplayToggle) shell.sleep();
           } else {
             shell.wake("sidebar");
             const ready = await frameTimings.spanAsync(frameId, "wake-barrier", () =>
@@ -2572,7 +2708,7 @@ class DashboardController {
         }
         return;
       }
-      if (!shell.isScreenOn()) {
+      if (event.kind !== "neural-band" && !shell.isScreenOn()) {
         // Sleep-time gestures belong to the Glanceboard: a tap or a hold
         // shows it (the shell would ignore them), and a double-tap while it
         // is up dismisses it and falls through to the normal wake below.
@@ -3010,6 +3146,7 @@ class DashboardController {
    * one queued.
    */
   requestShellRender(causeFrameId = 0): void {
+    this.neuralBandModalities.syncFocus();
     // Remember the input frame that asked for this chrome repaint so
     // renderShell can nest its frame under it; without that link an input
     // event and the shell render it caused show up as two unrelated frames
@@ -3059,9 +3196,10 @@ class DashboardController {
     if (wantFreshData) frameTimings.logFrame(frameId, "follow-up repaint that must not use cached data");
     beginRenderPass(!wantFreshData);
     const paintStartedAtMs = Date.now();
-    const planes = frameTimings.span(frameId, "paint", () =>
-      frameTimings.runWithFrame(frameId, () => shell.paintScene()),
-    );
+    const planes = frameTimings.span(frameId, "paint", () => frameTimings.runWithFrame(frameId, () => {
+      const cursor = this.neuralBandCursor;
+      return shell.paintScene(cursor ? neuralBandCursorPlane(cursor, this.neuralBandCursorKey) : undefined);
+    }));
     const paintMs = Date.now() - paintStartedAtMs;
     const paintUsedStaleData = endRenderPass();
     if (paintUsedStaleData) {
@@ -3165,6 +3303,7 @@ class DashboardController {
   private setPhase(phase: ConnectionPhase): void {
     if (this.phase === phase) return;
     this.phase = phase;
+    if (phase !== "connected" && !this.isPreviewDisplayActive()) this.resetNeuralBandInput();
     this.syncKeyboardLink();
     if (phase !== "connected" && phase !== "charging") {
       shell.setBatteryLevels({ ring: null, ringCharging: null });

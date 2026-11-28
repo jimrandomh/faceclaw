@@ -117,6 +117,7 @@ class AiChatLayer implements Layer {
         }
         return;
       case "long-press-release": this.draft.release(); return;
+      case "long-press-cancel": this.draft.cancel(); return;
       case "double-click": this.draft.cancel(); shell.yieldFocusToSidebar(); return;
       default: return;
     }

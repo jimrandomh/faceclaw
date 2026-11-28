@@ -2062,6 +2062,19 @@ function handleHubInput(window: HubWindow, event: InputEvent, frameId: number): 
     return;
   }
   const list = hubMenu(window);
+  if (event.type === "pointer-click") {
+    // Use the items in the last painted list. Updating them first could
+    // reorder the session the pointer is aimed at.
+    const index = list.indexAt(event.y, event.x);
+    if (index === null) {
+      frameTimings.finishFrame(frameId, "discarded: pointer missed the terminal hub list");
+      return;
+    }
+    list.select(index);
+    void list.activate().catch((error) => console.error("terminal hub action failed", error));
+    renderAndSubmit(window, frameId);
+    return;
+  }
   list.setItems(hubItems(window));
   switch (event.type) {
     case "scroll-up":

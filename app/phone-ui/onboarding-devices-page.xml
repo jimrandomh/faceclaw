@@ -38,6 +38,10 @@
                     <Button text="Install on Apple Watch" tap="{{ onWatchAppInstallTap }}" class="-primary devices-watch-install" visibility="{{ watchAppInstallVisibility }}" />
                     <Label text="{{ watchAppNote }}" class="permissions-description devices-watch-note" textWrap="true" visibility="{{ watchAppNoteVisibility }}" />
                 </StackLayout>
+                <GridLayout columns="*,auto" rows="auto" class="pairing-row" visibility="{{ neuralBandVisibility }}">
+                    <Label col="0" text="Meta Neural Band" class="pairing-title" verticalAlignment="center" />
+                    <Switch col="1" checked="{{ hasNeuralBand }}" verticalAlignment="center" margin="0" />
+                </GridLayout>
             </StackLayout>
         </ScrollView>
 

@@ -1,0 +1,23 @@
+[package]
+name = "band-core"
+version = "0.3.8"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Sans-IO Meta Neural Band protocol core, ported from callbacked/kinesis"
+
+[dependencies]
+aes = "0.8"
+cbc = { version = "0.1", features = ["alloc"] }
+hkdf = "0.12"
+hmac = "0.12"
+p256 = { version = "0.13", features = ["ecdh", "ecdsa"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+sha2 = "0.10"
+thiserror = "2"
+
+[dev-dependencies]
+hex = "0.4"
+p256 = { version = "0.13", features = ["ecdh", "ecdsa"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+sha2 = "0.10"

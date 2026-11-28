@@ -75,6 +75,23 @@ test('navigation that scrolls animates a strip covering both viewports', () => {
   assert.deepEqual(shown(moving, end), shown(settled, end));
 });
 
+test('coordinate selection follows the visible rows during a scroll animation', () => {
+  const menu = inkMenu({ rowGap: 1 });
+  menu.select(1);
+  paint(menu, 1000);
+  menu.moveSelection(1);
+  paint(menu, 2000);
+  assert.equal(menu.scrollTop, 20);
+  assert.equal(withClock(2000, () => menu.indexAt(BOX.y + 4, BOX.x + 4)), 0);
+  const settled = 2000 + MENU_HIGHLIGHT_DURATION_MS;
+  assert.equal(withClock(settled, () => menu.indexAt(BOX.y + 4, BOX.x + 4)), 1);
+  assert.equal(withClock(settled, () => menu.indexAt(BOX.y + 4, BOX.x - 1)), null);
+  assert.equal(withClock(settled, () => menu.indexAt(BOX.y + 19, BOX.x + 4)), null);
+  menu.setItems(['different', 'replacement', ...ITEMS.slice(2)]);
+  assert.equal(withClock(settled, () => menu.indexAt(BOX.y + 4, BOX.x + 4)), null,
+    'a row replaced since the last paint cannot be activated at its old coordinates');
+});
+
 test('a second move during the scroll starts from the offset on screen', () => {
   const menu = inkMenu();
   menu.select(1);

@@ -43,6 +43,7 @@ export function modalRect(): { x: number; y: number; width: number; height: numb
  */
 export class ShellModalLayer implements Layer {
   private readonly stack: LayerStack;
+  private paintedInterior: { x: number; y: number; width: number; height: number } | null = null;
 
   constructor(
     baseLayer: Layer,
@@ -51,7 +52,7 @@ export class ShellModalLayer implements Layer {
       /** The modal left the shell stack, however it went. */
       removed?: () => void;
       /** Input reached the modal (before its inner stack handles it). */
-      input?: (event: InputEvent) => void;
+      input?: () => void;
     } = {},
   ) {
     this.stack = new LayerStack(baseLayer, actions, modalInterior());
@@ -78,6 +79,7 @@ export class ShellModalLayer implements Layer {
     const inner = flattenPlanes(planes.map((plane) => plane === top ? { ...plane, image: plane.image.withDrawsBaked(false) } : plane), interior);
     const rect = modalRect();
     const innerX = rect.x + MODAL_PADDING, innerY = rect.y + MODAL_PADDING;
+    this.paintedInterior = { x: innerX, y: innerY, width: interior.width, height: interior.height };
     image.fillRect(rect.x, rect.y, rect.width, rect.height, SHELL_OPAQUE_BLACK);
     image.drawRect(rect.x, rect.y, rect.width, rect.height, 110);
     image.bitBlt(inner, innerX, innerY, { transparentZero: true });
@@ -86,7 +88,17 @@ export class ShellModalLayer implements Layer {
   }
 
   async handleInput(event: InputEvent, _ctx: LayerContext): Promise<void> {
-    this.hooks.input?.(event);
+    this.hooks.input?.();
     await this.stack.handleInput(event);
+  }
+
+  async hitTest(x: number, y: number): Promise<boolean> {
+    const interior = this.paintedInterior;
+    if (interior && x >= interior.x && x < interior.x + interior.width &&
+        y >= interior.y && y < interior.y + interior.height) {
+      this.hooks.input?.();
+      await this.stack.hitTest(x - interior.x, y - interior.y);
+    }
+    return true;
   }
 }

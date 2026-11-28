@@ -30,6 +30,28 @@ function menu() {
   const context={stack:{getBaseSize:()=>({width:80,height:80}),isFocused:()=>true}};
   return {layer,paint:()=>layer.paint(context,()=>new graphics.GrayImage(80,80)),context};
 }
+
+test('a positional click activates the row under the pointer, with no action on headings, gaps or disabled rows', async () => {
+  const activated = [];
+  const item = (label, disabled) => ({ label, disabled, onSelect: () => activated.push(label) });
+  const layer = new MenuLayer('Menu', [item('First'), menuHeadingItem('Section'), item('Disabled', true), item('Last')],
+    { x: 10, y: 8, width: 80, minHeight: 130, maxHeight: 130 });
+  const context = { stack: { getBaseSize: () => ({ width: 110, height: 160 }), isFocused: () => true } };
+  layer.paint(context, () => new graphics.GrayImage(110, 160));
+  const { listRowHeight, menuTitleHeight } = require('../.test-build/app/ui/metrics.js');
+  const row = listRowHeight(font);
+  const top = 8 + menuTitleHeight(font) + 8;
+  assert.equal(layer.selectedIndex, 0);
+  for (const [x, y] of [[6, top + row * 3 + 3], [24, top - 1], [24, top + row - 1],
+    [24, top + row + 3], [24, top + row * 2 + 3], [24, top + row * 4 + 3]]) {
+    assert.equal(await layer.hitTest(x, y, context), true);
+  }
+  assert.deepEqual(activated, []);
+  assert.equal(layer.selectedIndex, 0);
+  assert.equal(await layer.hitTest(24, top + row * 3 + 3, context), true);
+  assert.deepEqual(activated, ['Last']);
+  assert.equal(layer.selectedIndex, 3);
+});
 test('menu draws the selected text in place under a retained rounded highlight',async()=>{
   const m=menu(),image=m.paint(),row=image.draws.find(d=>d.presentation);
   assert.equal(row.presentation.depth,0);assert.equal(row.presentation.displayList.calls[0].radius,8);
@@ -69,6 +91,31 @@ test('a replayed image is occluded only by later planes drawn into the screen, a
 const {LayerStack,noopLayerActions}=load('app/ui/layers.ts',{
   './viewport':require('../.test-build/app/ui/viewport.js'),
   '../graphics/image':graphics,'../graphics/plane':planes,'../native/frame-timings':{spanCurrent:(_name,fn)=>fn()},'../graphics/screen-size':{screenWidth:()=>640,screenHeight:()=>480},'./gestures':{},
+});
+test('a pinch clicks only the pointed entry of the open submenu', async () => {
+  const { NeuralBandModalities } = require('../.test-build/app/g2/neural-band-modalities.js');
+  const calls = [];
+  const bounds = { width: 120, height: 160 };
+  const makeImage = () => new graphics.GrayImage(bounds.width, bounds.height);
+  const stack = new LayerStack({
+    paint: makeImage,
+    hitTest: () => { calls.push('underneath'); return true; },
+  }, noopLayerActions, bounds);
+  stack.push(new MenuLayer(null, ['First', 'Second'].map(label => ({ label, onSelect: () => calls.push(label) })),
+    { x: 16, y: 22, width: 88, minHeight: 64, maxHeight: 64 }));
+  stack.paint();
+  let click;
+  const pointer = new NeuralBandModalities({
+    setPointer: () => true, pointerChanged() {}, pointerBack() {}, bounds: () => bounds,
+    pointerClick(x, y) { click = stack.hitTest(x, y); },
+  });
+  pointer.togglePointer();
+  pointer.onPointer([0, 1, 0, -6.5, 2, 1.1, 1, 0, 2, 1.2, 0, 0]);
+  await click;
+  assert.deepEqual(calls, ['Second']);
+  pointer.onPointer([0, 2, 45, 0, 2, 2.1, 1, 0, 2, 2.2, 0, 0]);
+  await click;
+  assert.deepEqual(calls, ['Second']);
 });
 test('context menu surface and selected row both use +4 without changing the app screen',()=>{
   const base=new graphics.GrayImage(100,90,96);

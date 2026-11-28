@@ -15,6 +15,7 @@ function load(file, modules, globals = {}) {
 }
 
 const graphics = require('../.test-build/app/graphics/image.js');
+const cursor = require('../.test-build/app/g2/keyboard/cursor.js');
 const { bordered } = require('./helpers/viewport.cjs');
 const { BdfFont } = load('app/graphics/bdffont.ts', { '@nativescript/core': {} });
 const font = BdfFont.parse(fs.readFileSync(path.join(__dirname, '../app/fonts/terminus/ter-u12n.bdf'), 'utf8'));
@@ -39,6 +40,7 @@ function fixture({ state = 'connected', pointer = true } = {}) {
   };
   const { MouseTestLayer } = load('app/apps/developer/mouse-test.ts', {
     '../../graphics/ui-fonts': { getDefaultSmallFont: () => font }, '../../graphics/image': graphics,
+    '../../g2/keyboard/cursor': cursor,
     '../../g2/keyboard/service': { keyboardService: service },
     '../../ui/shell/shell': { shell: { isWindowVisible: () => visible } },
     '../../util/numeric-util': { clamp: (n, lo, hi) => Math.max(lo, Math.min(hi, n)) },

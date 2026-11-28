@@ -1,6 +1,7 @@
 import { getDefaultSmallFont } from "../../graphics/ui-fonts";
 import { GrayImage } from "../../graphics/image";
 import type { HidPointerSample } from "../../g2/keyboard/hid";
+import { paintPointerCursor } from "../../g2/keyboard/cursor";
 import { keyboardService } from "../../g2/keyboard/service";
 import { type InputEvent } from "../../ui/gestures";
 import { Layer, type LayerContext } from "../../ui/layers";
@@ -15,27 +16,6 @@ const RENDER_INTERVAL_MS = 33;
 const POINTER_GAIN = 1;
 /** Left-click marks kept on the page. */
 const MAX_MARKS = 12;
-
-/** The arrow, tip at its top left: '#' is the outline, '.' the fill. */
-const CURSOR = [
-  "#",
-  "##",
-  "#.#",
-  "#..#",
-  "#...#",
-  "#....#",
-  "#.....#",
-  "#......#",
-  "#.......#",
-  "#........#",
-  "#.....#####",
-  "#..#..#",
-  "#.# #..#",
-  "##  #..#",
-  "#    #..#",
-  "     #..#",
-  "      ##",
-];
 
 /**
  * Mouse cursor test: moves an arrow with the touchpad or mouse of the
@@ -181,26 +161,13 @@ export class MouseTestLayer implements Layer {
       image.drawLine(mark.x - 4, mark.y, mark.x + 4, mark.y, 140);
       image.drawLine(mark.x, mark.y - 4, mark.x, mark.y + 4, 140);
     }
-    if (this.x >= 0) drawCursor(image, Math.round(this.x), Math.round(this.y));
+    if (this.x >= 0) paintPointerCursor(image, Math.round(this.x), Math.round(this.y));
     return image;
   }
 
   async handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {
     if (event.type === "double-click") {
       ctx.stack.pop();
-    }
-  }
-}
-
-function drawCursor(image: GrayImage, x: number, y: number): void {
-  for (const [row, pixels] of CURSOR.entries()) {
-    for (let col = 0; col < pixels.length; col++) {
-      const pixel = pixels[col];
-      if (pixel === " ") continue;
-      const px = x + col;
-      const py = y + row;
-      if (px < 0 || py < 0 || px >= image.width || py >= image.height) continue;
-      image.setPixel(px, py, pixel === "#" ? 255 : 70);
     }
   }
 }

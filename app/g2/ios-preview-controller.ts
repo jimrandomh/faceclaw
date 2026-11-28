@@ -212,7 +212,9 @@ export class IosPreviewController {
       voiceInputEnabled: true,
       onKeyboardInputChanged: session => this.onKeyboardInputChanged(session ? {
         targets: session.targets,
+        getText: () => session.getText(),
         setText: text => { if (this.active && !this.glassesLocked) session.setText(text) },
+        onTextChanged: listener => session.onTextChanged(listener),
         send: () => { if (this.active && !this.glassesLocked) session.send() },
         sendTo: id => { if (this.active && !this.glassesLocked) session.sendTo(id) },
         discard: () => session.discard(),

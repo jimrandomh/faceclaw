@@ -50,6 +50,10 @@ export class MusicSettingsLayer implements Layer {
     return this.currentMenu().paint(ctx, paintBelow);
   }
 
+  hitTest(x: number, y: number, ctx: LayerContext): Promise<boolean> | boolean {
+    return this.menu?.hitTest(x, y, ctx) ?? false;
+  }
+
   async handleInput(event: InputEvent, ctx: LayerContext): Promise<void> {
     await this.currentMenu().handleInput(event, ctx);
   }

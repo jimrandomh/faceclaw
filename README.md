@@ -58,6 +58,9 @@ to export a copy of your configuration first, and scripts/push_config.sh to
 import it into the new version (see [config transfer](scripts/config-transfer.md)).
 
 
+For an Android build with Meta Neural Band support, follow the
+[optional Neural Band driver build and setup instructions](native/neural-band/README.md).
+
 ## Features
 
 <!-- Generated from website/content/features.md by scripts/sync-site.mjs; edit there. -->

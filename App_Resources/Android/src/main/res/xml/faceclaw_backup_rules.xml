@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <!-- The Band key is stored in noBackupFilesDir, also excluded by Android. -->
+    <exclude domain="root" path="no_backup/neural-band-owner-v1.json" />
+</full-backup-content>

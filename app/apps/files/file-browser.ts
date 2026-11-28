@@ -129,6 +129,7 @@ export class FileBrowserLayer implements Layer {
   private navRoot: string | null = null;
   private entries: DirectoryEntry[] | null = null;
   private listingFailed = false;
+  private paintedView: { mode: FilesViewMode; location: string | null } | null = null;
 
   /** List view. Both views index the same flatRows(), which is how setViewMode carries the selection across. */
   private readonly listMenu = new Menu<BrowserItem>({
@@ -172,7 +173,8 @@ export class FileBrowserLayer implements Layer {
     // window's bottom edge: the padding suggested for that edge goes inside
     // the scrolled content, so the last row keeps clear of a border there
     // and a row cut off for scrolling meets it rather than a blank strip.
-    const listView = filesViewModeSetting.get() === "list";
+    const mode = filesViewModeSetting.get();
+    const listView = mode === "list";
     const headerEnd = headerBottom(font, padding.top);
     // List row boxes start one pixel above the header's bottom edge.
     const top = listView ? headerEnd - 1 : headerEnd;
@@ -183,6 +185,7 @@ export class FileBrowserLayer implements Layer {
     } else {
       this.grid.paint(image, box, ctx.stack.isFocused());
     }
+    this.paintedView = { mode, location: this.location };
     return image;
   }
 
@@ -201,6 +204,20 @@ export class FileBrowserLayer implements Layer {
     } else {
       await this.grid.handleInput(event, ctx);
     }
+  }
+
+  async hitTest(x: number, y: number, ctx: LayerContext): Promise<boolean> {
+    const mode = filesViewModeSetting.get();
+    if (!this.paintedView || this.paintedView.mode !== mode || this.paintedView.location !== this.location) return false;
+    if (mode === "icons") return this.grid.hitTest(x, y, ctx);
+
+    const index = this.listMenu.indexAt(y, x);
+    if (index === null) return false;
+    const row = this.listMenu.items[index];
+    if (!row || row.kind === "info") return false;
+    this.listMenu.select(index);
+    await this.activateItem(row, ctx);
+    return true;
   }
 
   onFocus(lastInput: InputEvent | null): void {

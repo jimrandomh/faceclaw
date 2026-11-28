@@ -586,8 +586,8 @@ export class EvenHubSession implements EvenHubMicClient, EvenHubImuClient, EvenH
     }
     if (!this.page) return;
     const capture = eventCaptureContainer(this.page);
-    // The stock eventSource can't tell the watch from the ring, and scrolls
-    // carry none; the extension field names the device when it is known.
+    // Stock eventSource uses the ring code for external controllers. The
+    // extension field names devices supported by the extension API.
     const inputSource = "source" in event && event.source ? extensionInputSource(event.source) : undefined;
     switch (event.type) {
       case "click":
@@ -1709,7 +1709,7 @@ type ExtensionInputSource = "ring" | "left-touchpad" | "right-touchpad" | "watch
 
 const INPUT_SOURCE_FIELD = "faceclawInputSource";
 
-function extensionInputSource(source: InputSource): ExtensionInputSource {
+function extensionInputSource(source: InputSource): ExtensionInputSource | undefined {
   switch (source) {
     case "ring":
       return "ring";
@@ -1719,13 +1719,14 @@ function extensionInputSource(source: InputSource): ExtensionInputSource {
       return "right-touchpad";
     case "watch":
       return "watch";
+    case "neural-band":
+      return undefined;
   }
 }
 
 /**
- * ring/left-arm/right-arm -> PB EventSourceType. The watch is reported to
- * EvenHub apps as the ring: they only know stock hardware, and the watch's
- * ring-vocabulary gestures mean the same thing.
+ * Map controllers to the stock EvenHub EventSourceType. External controllers
+ * use the ring code, because their click and back gestures mean the same thing.
  */
 function gestureSource(source: InputSource): number {
   switch (source) {
@@ -1733,6 +1734,7 @@ function gestureSource(source: InputSource): number {
       return 1;
     case "ring":
     case "watch":
+    case "neural-band":
       return 2;
     case "left-arm":
       return 3;

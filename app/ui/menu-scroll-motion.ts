@@ -101,7 +101,8 @@ export class MenuScrollMotion {
     this.animation = undefined;
   }
 
-  private offsetAt(settled: number, now: number): number {
+  /** The same offset used by the scroll strip rendered at this time. */
+  offsetAt(settled: number, now: number): number {
     const animation = this.animation;
     if (!animation) return settled;
     return Math.round(scrollOffsetAt(animation, (now - animation.startedAt) / animation.durationMs));
